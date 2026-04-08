@@ -1,0 +1,31 @@
+# LeanAI Phase 0 — Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core inference — runs GGUF quantized models on CPU
+llama-cpp-python>=0.2.56
+
+# Mamba state space model
+# mamba-ssm>=1.2.0  # Requires CUDA — use CPU fallback in Phase 0
+torch>=2.1.0
+transformers>=4.38.0
+
+# Memory layers
+chromadb>=0.4.22          # Episodic vector store
+sentence-transformers>=2.6.0  # Embeddings for memory
+networkx>=3.2             # Semantic knowledge graph
+
+# Neurosymbolic verification
+sympy>=1.12               # Symbolic math verification
+z3-solver>=4.12.0         # Formal logic verifier
+
+# Utilities
+numpy>=1.26.0
+rich>=13.7.0              # Beautiful terminal output
+typer>=0.9.0              # CLI interface
+pydantic>=2.5.0           # Data validation
+httpx>=0.26.0             # Async HTTP for tools
+python-dotenv>=1.0.0      # Config management
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
