@@ -1,6 +1,6 @@
 """
-LeanAI v3+4b — Code executor integrated
-New: /run <code>  to directly execute code
+LeanAI v3 + Phase 4b + Phase 4c
+Commands: /run /index /ask /remember /profile /world /train /generate /status /quit
 """
 import sys, os, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -12,14 +12,12 @@ def print_banner():
 ╔══════════════════════════════════════════════════════════╗
 ║                        LeanAI  v3                        ║
 ║   Fast · Lightweight · Runs anywhere · Gets smarter      ║
-║   Phase 4b: Code Executor — generates + runs + verifies  ║
+║   Phase 4c: Project Indexer — knows your entire codebase ║
 ╚══════════════════════════════════════════════════════════╝""")
 
 
 def print_response(r):
     print(f"\n{r.text}\n")
-
-    # Show code execution result if any
     if r.code_executed:
         if r.code_passed:
             print("Code executed: PASSED", end="")
@@ -35,12 +33,10 @@ def print_response(r):
                 for line in r.code_output.strip().split("\n"):
                     print(f"  {line}")
         print()
-
     print("─" * 55)
     pct = int(r.confidence * 100)
     bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
     print(f"Confidence  [{bar}] {pct}%  {r.confidence_label}")
-
     stats = [f"Tier: {r.tier_used}", f"Latency: {r.latency_ms:.0f}ms"]
     if r.memory_context_used:   stats.append("Memory: active")
     if r.answered_from_memory:  stats.append("From memory: yes")
@@ -60,17 +56,23 @@ def main():
     print("\nInitializing LeanAI...")
     engine = LeanAIEngine(verbose=verbose, auto_train=True, auto_execute=True)
 
-    s = engine.status()
+    # Attach project indexer with the same embedder as memory
+    from tools.indexer import ProjectIndexer
+    embedder = engine.memory.episodic._embedder
+    indexer  = ProjectIndexer(embedder=embedder)
+    engine.indexer = indexer
+
+    s   = engine.status()
     mem = s["memory"]
     tr  = s["training"]
     ex  = s["executor"]
     print(f"\nModel    : {'loaded' if s['model_loaded'] else 'not loaded (loads on first question)'}")
-    print(f"Format   : {s['prompt_format']}")
-    print(f"Executor : {ex['available_languages'] if 'available_languages' in ex else ex['available']}")
+    print(f"Executor : {ex.get('available', ex.get('available_languages', []))}")
+    print(f"Indexer  : {indexer.count()} chunks indexed")
     print(f"Memory   : {mem['episodic_entries']} episodes | {mem['episodic_backend']}")
     print(f"World    : {mem['semantic_entities']} entities | {mem['user_profile_fields']} profile fields")
     print(f"Training : {tr['total_pairs']} pairs | {tr['quality_filter']['passed']} quality")
-    print("\nCommands: /help  /run  /remember  /profile  /world  /train  /generate  /status  /quit\n")
+    print("\nCommands: /help  /index  /ask  /run  /remember  /profile  /train  /status  /quit\n")
 
     while True:
         try:
@@ -91,8 +93,16 @@ def main():
         if user_input.lower() == "/help":
             print("""
 Commands:
+  /index <path>     — index a project directory
+                      e.g. /index C:\\Users\\adity\\myproject
+                      e.g. /index .  (index current folder)
+  /ask <question>   — search indexed codebase
+                      e.g. /ask how does the router work
+                      e.g. /ask find all database functions
+  /indexstats       — show indexer statistics
+  /indexclear       — clear the project index
+
   /run <code>       — directly execute Python code
-                      e.g. /run print([x**2 for x in range(5)])
   /remember <fact>  — store fact in long-term memory
   /profile          — show what LeanAI knows about you
   /world            — show world model entities
@@ -106,6 +116,84 @@ Commands:
   /quit             — exit
 """)
             continue
+
+        # ── Indexer commands ──────────────────────────────────────────
+
+        if user_input.lower().startswith("/index "):
+            path_str = user_input[7:].strip()
+            if path_str == ".":
+                path_str = os.getcwd()
+            from pathlib import Path
+            path = Path(path_str).expanduser()
+            if not path.exists():
+                print(f"Path not found: {path}\n")
+                continue
+            print(f"Indexing: {path}")
+            print("This may take a moment for large projects...\n")
+            try:
+                stats = indexer.index_project(str(path))
+                print(f"Done!")
+                print(f"  Files   : {stats.indexed_files} indexed, {stats.skipped_files} unchanged")
+                print(f"  Chunks  : {stats.total_chunks} total")
+                print(f"  Languages: {', '.join(f'{k}:{v}' for k,v in stats.languages.items())}")
+                print(f"  Time    : {stats.index_time_s}s\n")
+            except Exception as e:
+                print(f"Indexing failed: {e}\n")
+            continue
+
+        if user_input.lower().startswith("/ask "):
+            query = user_input[5:].strip()
+            if not query:
+                print("Usage: /ask <question about your codebase>\n")
+                continue
+            if indexer.count() == 0:
+                print("No project indexed yet. Run: /index <path>\n")
+                continue
+            print(f"Searching {indexer.count()} chunks...")
+            results = indexer.search(query, top_k=5)
+            if not results:
+                print("No relevant code found.\n")
+                continue
+            print(f"\nFound {len(results)} relevant sections:\n")
+            for i, r in enumerate(results, 1):
+                rel   = r.get("relative_path", "?")
+                name  = r.get("name", "")
+                lang  = r.get("language", "")
+                line  = r.get("start_line", 0)
+                score = r.get("relevance", 0)
+                print(f"  {i}. {rel}", end="")
+                if name: print(f" — {name}", end="")
+                if line: print(f" (line {line})", end="")
+                print(f"  [{score:.0%}]")
+                # Show first 3 lines of content
+                preview = r.get("content", "")[:200].split("\n")[:3]
+                for pline in preview:
+                    print(f"     {pline}")
+                print()
+            continue
+
+        if user_input.lower() == "/indexstats":
+            s = indexer.stats()
+            print(f"\nProject index stats:")
+            print(f"  Total chunks  : {s.get('total_chunks', 0)}")
+            print(f"  Indexed files : {s.get('indexed_files', 0)}")
+            if "project_root" in s:
+                print(f"  Project root  : {s['project_root']}")
+            if "languages" in s:
+                print(f"  Languages     : {s['languages']}")
+            if "last_updated" in s:
+                import time
+                age = time.time() - s["last_updated"]
+                print(f"  Last indexed  : {int(age/60)} minutes ago")
+            print()
+            continue
+
+        if user_input.lower() == "/indexclear":
+            indexer.clear()
+            print("Project index cleared.\n")
+            continue
+
+        # ── Other commands ────────────────────────────────────────────
 
         if user_input.lower().startswith("/run "):
             code = user_input[5:].strip()
@@ -139,8 +227,8 @@ Commands:
             continue
 
         if user_input.lower() == "/world":
-            stats = engine.memory.world.stats()
-            print(f"\nEntities: {stats['entities']} | Relations: {stats['relations']}")
+            ws = engine.memory.world.stats()
+            print(f"\nEntities: {ws['entities']} | Relations: {ws['relations']}")
             entities = sorted(engine.memory.world._entities.values(),
                               key=lambda e: e.mention_count, reverse=True)
             for e in entities[:10]:
@@ -175,11 +263,9 @@ Commands:
         if user_input.lower() == "/trainstatus":
             ts = engine.trainer.status()
             qf = ts["quality_filter"]
-            print(f"\nTrainer    : {'running' if ts['running'] else 'stopped'}")
-            print(f"Total pairs: {ts['total_pairs']}")
-            print(f"Quality    : {qf['passed']}/{qf['total']} ({qf['pass_rate']:.0%})")
-            print(f"Avg score  : {qf['avg_score']}")
-            print(f"Runs done  : {ts['training_runs']}\n")
+            print(f"\nTrainer : {'running' if ts['running'] else 'stopped'}")
+            print(f"Pairs   : {ts['total_pairs']} total, {qf['passed']} quality ({qf['pass_rate']:.0%})")
+            print(f"Avg score: {qf['avg_score']} | Runs: {ts['training_runs']}\n")
             continue
 
         if user_input.lower() == "/export":
@@ -192,13 +278,10 @@ Commands:
         if user_input.lower() == "/status":
             s = engine.status()
             m, tr = s["memory"], s["training"]
-            print(f"\nPhase    : {s['phase']}")
-            print(f"Model    : {s['model']}")
-            print(f"Format   : {s['prompt_format']}")
-            print(f"Threads  : {s['threads']}")
-            print(f"Executor : {s['executor']}")
-            print(f"Memory   : {m['episodic_entries']} episodes, {m['semantic_entities']} entities")
-            print(f"Training : {tr['total_pairs']} pairs, {tr['quality_filter']['passed']} quality\n")
+            print(f"\nPhase  : {s['phase']} | Model: {s['model']} | Format: {s['prompt_format']}")
+            print(f"Indexer: {indexer.count()} chunks")
+            print(f"Memory : {m['episodic_entries']} episodes, {m['semantic_entities']} entities")
+            print(f"Training: {tr['total_pairs']} pairs, {tr['quality_filter']['passed']} quality\n")
             continue
 
         if user_input.lower() == "/clear":
@@ -206,8 +289,20 @@ Commands:
             print("Cleared.\n")
             continue
 
+        # ── Generate with codebase context if indexed ─────────────────
+        query = user_input
+
+        # If project is indexed, inject relevant code context into query
+        if indexer.count() > 0:
+            code_context = indexer.search(query, top_k=3)
+            if code_context:
+                formatted = indexer.format_search_results(code_context, max_chars=800)
+                if formatted:
+                    # Prepend codebase context to query for the engine
+                    query = f"[Relevant codebase context:]\n{formatted}\n\n[Question:] {user_input}"
+
         print("\nLeanAI: ", end="", flush=True)
-        response = engine.generate(user_input)
+        response = engine.generate(query)
         print_response(response)
 
 
