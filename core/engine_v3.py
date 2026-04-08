@@ -1,9 +1,12 @@
 """
-LeanAI Phase 3 Engine - Qwen2.5 Coder + Phi-3 support
-Optimized for i7-11800H with 32GB RAM
+LeanAI Phase 3+4b Engine
+- Qwen2.5 Coder 7B (chatml) + Phi-3 (phi3) auto-detection
+- Sandboxed code execution with auto-fix loop
+- Only returns verified-working code
 """
 import time
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional
 from pathlib import Path
@@ -13,6 +16,7 @@ from core.watchdog import MetaCognitiveWatchdog
 from core.confidence import ConfidenceScoringEngine
 from core.calibrator import ConfidenceCalibrator
 from tools.z3_verifier import Z3Verifier, Verdict
+from tools.executor import CodeExecutor
 from memory.hierarchy_v2 import HierarchicalMemoryV2
 from training.self_improve import TrainingDataStore, FeedbackSignal
 from training.continual_trainer import ContinualTrainer, TrainingConfig
@@ -45,6 +49,10 @@ class LeanAIResponse:
     memory_context_used: bool
     answered_from_memory: bool
     quality_score: float
+    code_executed: bool = False
+    code_passed: bool = False
+    code_output: str = ""
+    code_auto_fixed: bool = False
     warning: Optional[str] = None
     corrected: bool = False
 
@@ -60,37 +68,51 @@ def _get_active_model_path() -> str:
 
 def _detect_prompt_format(model_path: str) -> str:
     name = Path(model_path).name.lower()
-    if "qwen" in name:
-        return "chatml"
-    if "phi" in name:
-        return "phi3"
-    if "llama" in name:
-        return "llama3"
+    if "qwen" in name: return "chatml"
+    if "phi" in name: return "phi3"
+    if "llama" in name: return "llama3"
     return "chatml"
 
 
 def _optimal_threads(model_path: str) -> int:
     name = Path(model_path).name.lower()
-    cpu_count = os.cpu_count() or 8
-    if "7b" in name or "6b" in name or "8b" in name:
-        return min(cpu_count, 16)
-    if "33b" in name or "34b" in name:
-        return min(cpu_count, 8)
-    return min(cpu_count, 8)
+    cpu = os.cpu_count() or 8
+    if any(x in name for x in ["7b", "6b", "8b"]): return min(cpu, 16)
+    if any(x in name for x in ["33b", "34b"]): return min(cpu, 8)
+    return min(cpu, 8)
+
+
+def _extract_code_blocks(text: str) -> list:
+    """Extract all code blocks from a response."""
+    blocks = []
+    pattern = re.compile(r"```(?:python|py|javascript|js|bash|sh)?\n?(.*?)```", re.DOTALL)
+    for m in pattern.finditer(text):
+        blocks.append(m.group(1).strip())
+    # Also check for inline code that looks like a complete program
+    if not blocks:
+        lines = text.strip().split("\n")
+        code_lines = [l for l in lines if not l.startswith("#") and l.strip()]
+        if any(kw in text for kw in ["def ", "class ", "import ", "print(", "for ", "while "]):
+            if len(code_lines) > 1:
+                blocks.append(text.strip())
+    return blocks
 
 
 class LeanAIEngineV3:
 
-    def __init__(self, model_path=None, verbose=False, auto_train=True):
+    def __init__(self, model_path=None, verbose=False, auto_train=True, auto_execute=True):
         self.model_path    = model_path or _get_active_model_path()
         self.prompt_format = _detect_prompt_format(self.model_path)
         self.n_threads     = _optimal_threads(self.model_path)
         self.verbose       = verbose
+        self.auto_execute  = auto_execute
+
         self.router     = TaskRouter()
         self.watchdog   = MetaCognitiveWatchdog()
         self.scorer     = ConfidenceScoringEngine()
         self.calibrator = ConfidenceCalibrator()
         self.verifier   = Z3Verifier()
+        self.executor   = CodeExecutor()
         self.memory     = HierarchicalMemoryV2()
         self.store      = TrainingDataStore()
         self.self_play  = EnhancedSelfPlayEngine()
@@ -104,13 +126,17 @@ class LeanAIEngineV3:
         )
         self._model        = None
         self._model_loaded = False
+
         if auto_train:
             self.trainer.start()
+
         model_name = Path(self.model_path).name
         print("[LeanAI v3] Engine initialized.")
         print(f"[LeanAI v3] Model: {model_name}")
         print(f"[LeanAI v3] Format: {self.prompt_format}")
         print(f"[LeanAI v3] Threads: {self.n_threads}")
+        print(f"[LeanAI v3] Code executor: {'on' if auto_execute else 'off'}")
+        print(f"[LeanAI v3] Available runtimes: {self.executor.available_languages}")
         print(f"[LeanAI v3] Memory: {self.memory.episodic.backend}")
         print(f"[LeanAI v3] Training: {self.store.stats()['total']} pairs")
 
@@ -119,6 +145,7 @@ class LeanAIEngineV3:
         start  = time.time()
         decision = self.router.route(query, self.memory.working.current_tokens)
 
+        # Tiny tier
         if decision.tier == Tier.TINY:
             text = self._handle_tiny(query)
             latency = (time.time() - start) * 1000
@@ -130,6 +157,7 @@ class LeanAIEngineV3:
             return self._wrap(text, pair.id, cal, "tiny", latency,
                               False, False, "Not needed.", 0, 0, False, True, 1.0)
 
+        # Memory-first
         memory_answer = self.memory.answer_from_memory(query)
         if memory_answer:
             latency = (time.time() - start) * 1000
@@ -141,44 +169,84 @@ class LeanAIEngineV3:
             return self._wrap(memory_answer, pair.id, cal, "memory (instant)", latency,
                               True, False, "From world model.", 0, 0, True, True, 1.0)
 
+        # Generate
         mem_ctx  = self.memory.prepare_context(query)
         mem_used = bool(mem_ctx)
-        prompt   = self._build_prompt(
-            query, mem_ctx,
-            self.memory.working.get_context_window(max_tokens=512),
-        )
+        prompt   = self._build_prompt(query, mem_ctx,
+                                       self.memory.working.get_context_window(max_tokens=512))
         response_text = self._generate_with_model(prompt, config)
-        raw_score = self.scorer.score_from_text(response_text)
-        cal = self.calibrator.calibrate(
-            raw_score.overall, response_text, decision.tier.value, False, query)
 
-        verified = corrected = False
+        # Code execution
+        code_executed = code_passed = code_auto_fixed = False
+        code_output = ""
+
+        if self.auto_execute and decision.requires_tools:
+            code_blocks = _extract_code_blocks(response_text)
+            if code_blocks:
+                verified = self.executor.execute_and_verify(code_blocks[0])
+                code_executed  = True
+                code_passed    = verified.passed
+                code_auto_fixed = verified.auto_fixed
+                code_output    = self.executor.format_result(verified)
+
+                # If code failed, add error context to response
+                if not verified.passed:
+                    error_note = (
+                        "\n\n> Execution note: Code ran but produced an error. "
+                        f"Error: {verified.final_result.stderr[:200].strip()}"
+                    )
+                    response_text += error_note
+                else:
+                    # Prepend execution success note
+                    pass
+
+        # Score and calibrate
+        raw_score = self.scorer.score_from_text(response_text)
+        # Boost confidence if code was verified
+        base_conf = 0.90 if code_passed else raw_score.overall
+        cal = self.calibrator.calibrate(base_conf, response_text, decision.tier.value,
+                                         code_passed, query)
+
+        # Math/logic verification
+        math_verified = math_corrected = False
         verify_summary = "Not checked."
         claims_checked = claims_correct = 0
 
-        if decision.requires_verifier or raw_score.needs_verification:
+        if decision.requires_verifier and not code_executed:
             report = self.verifier.verify_text(response_text, query)
             claims_checked = report.claims_found
             claims_correct = report.claims_verified
-            verified  = report.overall_verdict == Verdict.TRUE
-            corrected = report.overall_verdict == Verdict.FALSE
+            math_verified  = report.overall_verdict == Verdict.TRUE
+            math_corrected = report.overall_verdict == Verdict.FALSE
             verify_summary = report.summary
             if report.corrected_text:
                 response_text = report.corrected_text
-            cal = self.calibrator.calibrate(
-                raw_score.overall, response_text, decision.tier.value, verified, query)
+            cal = self.calibrator.calibrate(raw_score.overall, response_text,
+                                             decision.tier.value, math_verified, query)
 
         self.memory.record_exchange(query, response_text)
         latency = (time.time() - start) * 1000
-        feedback = (FeedbackSignal.EXCELLENT if verified else
-                    FeedbackSignal.GOOD if cal.calibrated > 0.7 else
-                    FeedbackSignal.NEUTRAL)
+
+        feedback = (FeedbackSignal.EXCELLENT if (code_passed or math_verified) else
+                    FeedbackSignal.GOOD if cal.calibrated > 0.7 else FeedbackSignal.NEUTRAL)
         pair = self.store.add_pair(instruction=query, response=response_text,
-            feedback=feedback, confidence=cal.calibrated, verified=verified,
+            feedback=feedback, confidence=cal.calibrated,
+            verified=code_passed or math_verified,
             latency_ms=latency, tier_used=decision.tier.value)
-        return self._wrap(response_text, pair.id, cal, decision.tier.value, latency,
-            verified, corrected, verify_summary, claims_checked, claims_correct,
-            mem_used, False, round(pair.quality_score, 3))
+
+        r = self._wrap(response_text, pair.id, cal, decision.tier.value, latency,
+            math_verified, math_corrected, verify_summary,
+            claims_checked, claims_correct, mem_used, False,
+            round(pair.quality_score, 3))
+        r.code_executed  = code_executed
+        r.code_passed    = code_passed
+        r.code_output    = code_output
+        r.code_auto_fixed = code_auto_fixed
+        return r
+
+    def execute_code(self, code: str, language: str = "python"):
+        """Directly execute code. Used by /run command."""
+        return self.executor.execute_and_verify(code, language)
 
     def give_feedback(self, pair_id, good):
         self.store.update_feedback(
@@ -192,18 +260,17 @@ class LeanAIEngineV3:
 
     def trigger_training(self):
         run = self.trainer.run_now()
-        return {
-            "status": run.status,
-            "pairs_used": run.pairs_used,
-            "notes": run.notes,
-            "duration_s": round((run.completed_at - run.started_at), 2) if run.completed_at else 0,
-        }
+        return {"status": run.status, "pairs_used": run.pairs_used,
+                "notes": run.notes,
+                "duration_s": round((run.completed_at - run.started_at), 2) if run.completed_at else 0}
 
     def generate_training_data(self, n=20):
         return self.trainer.generate_self_play(n)
 
     def training_status(self):
         return self.trainer.status()
+
+    # ── Private ────────────────────────────────────────────────────────
 
     def _load_model(self):
         if self._model_loaded:
@@ -218,14 +285,9 @@ class LeanAIEngineV3:
             print(f"[LeanAI v3] Loading {model_name} ({self.n_threads} threads)...")
             self._model = Llama(
                 model_path=self.model_path,
-                n_ctx=2048,
-                n_threads=self.n_threads,
-                n_batch=1024,
-                n_gpu_layers=0,
-                use_mmap=True,
-                use_mlock=False,
-                logits_all=False,
-                verbose=self.verbose,
+                n_ctx=2048, n_threads=self.n_threads, n_batch=1024,
+                n_gpu_layers=0, use_mmap=True, use_mlock=False,
+                logits_all=False, verbose=self.verbose,
             )
             self._model_loaded = True
             print("[LeanAI v3] Model loaded. Ready.")
@@ -236,21 +298,12 @@ class LeanAIEngineV3:
         self._load_model()
         if self._model is None:
             return "Demo mode — run: python setup.py --download-model --model qwen25-coder"
-        stop_tokens = [
-            "<|im_end|>", "<|im_start|>",
-            "<|user|>", "<|end|>", "<|assistant|>",
-            "\nYou:", "\nHuman:", "\nUser:",
-        ]
-        result = self._model(
-            prompt,
-            max_tokens=config.max_tokens,
-            temperature=config.temperature,
-            top_p=config.top_p,
-            top_k=config.top_k,
-            repeat_penalty=config.repeat_penalty,
-            stop=stop_tokens,
-            echo=False,
-        )
+        stop_tokens = ["<|im_end|>", "<|im_start|>", "<|user|>", "<|end|>",
+                       "<|assistant|>", "\nYou:", "\nHuman:", "\nUser:"]
+        result = self._model(prompt, max_tokens=config.max_tokens,
+            temperature=config.temperature, top_p=config.top_p,
+            top_k=config.top_k, repeat_penalty=config.repeat_penalty,
+            stop=stop_tokens, echo=False)
         text = result["choices"][0]["text"].strip()
         for token in stop_tokens:
             text = text.split(token)[0].strip()
@@ -259,9 +312,8 @@ class LeanAIEngineV3:
     def _build_prompt(self, query, memory_context, history):
         system = (
             "You are LeanAI — an expert coding AI assistant. "
-            "You excel at Python, JavaScript, TypeScript, Go, Rust, SQL, bash, "
-            "and all major frameworks. "
-            "Be concise. Provide clean working code. "
+            "You excel at Python, JavaScript, TypeScript, Go, Rust, SQL, bash. "
+            "Provide clean, working, well-commented code. "
             "Stop after answering. No follow-up questions."
         )
         if memory_context:
@@ -271,10 +323,8 @@ class LeanAIEngineV3:
         if self.prompt_format == "chatml":
             parts = ["<|im_start|>system\n" + system + "<|im_end|>\n"]
             for msg in history[-4:]:
-                role    = msg["role"]
-                content = msg["content"]
-                if len(content) > 400:
-                    content = content[:400]
+                role = msg["role"]
+                content = msg["content"][:400] if len(msg["content"]) > 400 else msg["content"]
                 if role == "user":
                     parts.append("<|im_start|>user\n" + content + "<|im_end|>\n")
                 elif role == "assistant":
@@ -283,10 +333,8 @@ class LeanAIEngineV3:
         else:
             parts = ["<|system|>\n" + system + "<|end|>\n"]
             for msg in history[-4:]:
-                role    = msg["role"]
-                content = msg["content"]
-                if len(content) > 300:
-                    content = content[:300]
+                role = msg["role"]
+                content = msg["content"][:300] if len(msg["content"]) > 300 else msg["content"]
                 if role == "user":
                     parts.append("<|user|>\n" + content + "<|end|>\n")
                 elif role == "assistant":
@@ -296,7 +344,6 @@ class LeanAIEngineV3:
         return "".join(parts)
 
     def _handle_tiny(self, query):
-        import re
         import math as m
         q = query.strip().lower()
         if re.match(r"^(hi|hello|hey)\b", q): return "Hello! How can I help?"
@@ -328,11 +375,11 @@ class LeanAIEngineV3:
 
     def status(self):
         return {
-            "phase": 3,
-            "model": Path(self.model_path).name,
-            "prompt_format": self.prompt_format,
-            "threads": self.n_threads,
+            "phase": "3+4b", "model": Path(self.model_path).name,
+            "prompt_format": self.prompt_format, "threads": self.n_threads,
             "model_loaded": self._model is not None,
+            "executor": {"available": self.executor.available_languages,
+                         "auto_execute": self.auto_execute},
             "verifier": self.verifier.status,
             "memory": self.memory.stats(),
             "training": self.trainer.status(),

@@ -1,11 +1,9 @@
 """
-LeanAI · Phase 3 Main
-New commands: /train  /generate  /trainstatus  /export
+LeanAI v3+4b — Code executor integrated
+New: /run <code>  to directly execute code
 """
-
-import sys, os
+import sys, os, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from core.engine_v3 import LeanAIEngineV3 as LeanAIEngine, GenerationConfig
 
 
@@ -14,22 +12,42 @@ def print_banner():
 ╔══════════════════════════════════════════════════════════╗
 ║                        LeanAI  v3                        ║
 ║   Fast · Lightweight · Runs anywhere · Gets smarter      ║
-║   Phase 3: Continual Learning · Self-Play · Calibrated   ║
+║   Phase 4b: Code Executor — generates + runs + verifies  ║
 ╚══════════════════════════════════════════════════════════╝""")
 
 
 def print_response(r):
     print(f"\n{r.text}\n")
+
+    # Show code execution result if any
+    if r.code_executed:
+        if r.code_passed:
+            print("Code executed: PASSED", end="")
+            if r.code_auto_fixed:
+                print(" (auto-fixed)", end="")
+            print()
+            if r.code_output:
+                for line in r.code_output.strip().split("\n"):
+                    print(f"  {line}")
+        else:
+            print("Code executed: FAILED")
+            if r.code_output:
+                for line in r.code_output.strip().split("\n"):
+                    print(f"  {line}")
+        print()
+
     print("─" * 55)
-    print(f"Confidence  [{r.confidence_bar}] {int(r.confidence*100)}%  {r.confidence_label}")
+    pct = int(r.confidence * 100)
+    bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
+    print(f"Confidence  [{bar}] {pct}%  {r.confidence_label}")
+
     stats = [f"Tier: {r.tier_used}", f"Latency: {r.latency_ms:.0f}ms"]
     if r.memory_context_used:   stats.append("Memory: active")
     if r.answered_from_memory:  stats.append("From memory: yes")
-    if r.verified:              stats.append("Verified: yes")
-    if r.corrected:             stats.append("Auto-corrected: yes")
+    if r.code_passed:           stats.append("Code: verified")
+    if r.verified:              stats.append("Math: verified")
+    if r.corrected:             stats.append("Auto-corrected")
     print("  ".join(stats))
-    if r.claims_checked > 0:
-        print(f"Verification: {r.verification_summary}")
     if r.warning:
         print(f"Note: {r.warning}")
     print()
@@ -39,17 +57,20 @@ def main():
     print_banner()
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
 
-    print("\nInitializing LeanAI v3...")
-    engine = LeanAIEngine(verbose=verbose, auto_train=True)
+    print("\nInitializing LeanAI...")
+    engine = LeanAIEngine(verbose=verbose, auto_train=True, auto_execute=True)
 
     s = engine.status()
     mem = s["memory"]
     tr  = s["training"]
+    ex  = s["executor"]
     print(f"\nModel    : {'loaded' if s['model_loaded'] else 'not loaded (loads on first question)'}")
+    print(f"Format   : {s['prompt_format']}")
+    print(f"Executor : {ex['available_languages'] if 'available_languages' in ex else ex['available']}")
     print(f"Memory   : {mem['episodic_entries']} episodes | {mem['episodic_backend']}")
     print(f"World    : {mem['semantic_entities']} entities | {mem['user_profile_fields']} profile fields")
-    print(f"Training : {tr['total_pairs']} pairs | {tr['quality_filter']['passed']} quality | background: {'on' if tr['running'] else 'off'}")
-    print("\nCommands: /help  /remember  /profile  /world  /train  /generate  /trainstatus  /export  /quit\n")
+    print(f"Training : {tr['total_pairs']} pairs | {tr['quality_filter']['passed']} quality")
+    print("\nCommands: /help  /run  /remember  /profile  /world  /train  /generate  /status  /quit\n")
 
     while True:
         try:
@@ -70,19 +91,33 @@ def main():
         if user_input.lower() == "/help":
             print("""
 Commands:
+  /run <code>       — directly execute Python code
+                      e.g. /run print([x**2 for x in range(5)])
   /remember <fact>  — store fact in long-term memory
   /profile          — show what LeanAI knows about you
   /world            — show world model entities
-  /memory           — show memory layer stats
+  /memory           — memory layer stats
   /train            — manually trigger training cycle
-  /generate [n]     — generate N self-play training pairs (default 20)
-  /trainstatus      — show training loop status
-  /export           — export training data to JSONL file
-  /selfplay         — generate 10 self-play pairs (quick)
+  /generate [n]     — generate N self-play training pairs
+  /trainstatus      — training loop status
+  /export           — export training data to JSONL
   /status           — full engine status
   /clear            — clear conversation history
   /quit             — exit
 """)
+            continue
+
+        if user_input.lower().startswith("/run "):
+            code = user_input[5:].strip()
+            if not code:
+                print("Usage: /run <python code>\n")
+                continue
+            print("Running...")
+            verified = engine.execute_code(code)
+            result = engine.executor.format_result(verified)
+            print(f"\n{result}\n")
+            if verified.passed and verified.final_result.stdout:
+                print(f"Output: {verified.final_result.stdout.strip()}\n")
             continue
 
         if user_input.lower().startswith("/remember "):
@@ -109,55 +144,8 @@ Commands:
             entities = sorted(engine.memory.world._entities.values(),
                               key=lambda e: e.mention_count, reverse=True)
             for e in entities[:10]:
-                print(f"  • {e.name} ({e.entity_type.value}) — {e.mention_count}x")
+                print(f"  {e.name} ({e.entity_type.value}) — {e.mention_count}x")
             print()
-            continue
-
-        if user_input.lower() == "/train":
-            print("Running training cycle...")
-            result = engine.trigger_training()
-            print(f"Status : {result['status']}")
-            print(f"Pairs  : {result['pairs_used']}")
-            print(f"Notes  : {result['notes']}")
-            print(f"Time   : {result['duration_s']}s\n")
-            continue
-
-        if user_input.lower().startswith("/generate"):
-            parts = user_input.split()
-            n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 20
-            print(f"Generating {n} self-play training pairs...")
-            added = engine.generate_training_data(n)
-            ts = engine.trainer.status()
-            print(f"Added {added} pairs. Total: {ts['total_pairs']} | Quality: {ts['quality_filter']['passed']}\n")
-            continue
-
-        if user_input.lower() == "/trainstatus":
-            ts = engine.trainer.status()
-            qf = ts["quality_filter"]
-            print(f"\nBackground trainer : {'running' if ts['running'] else 'stopped'}")
-            print(f"Total pairs        : {ts['total_pairs']}")
-            print(f"Quality passes     : {qf['passed']} / {qf['total']} ({qf['pass_rate']:.0%})")
-            print(f"Avg quality score  : {qf['avg_score']}")
-            print(f"Training runs done : {ts['training_runs']}")
-            if ts['last_run']:
-                lr = ts['last_run']
-                print(f"Last run           : {lr['status']} — {lr['notes']}")
-            print(f"Saved adapters     : {len(ts['adapters'])}\n")
-            continue
-
-        if user_input.lower() == "/export":
-            print("Exporting training data...")
-            path = engine.trainer.export_training_data()
-            if path:
-                print(f"Exported to: {path}\n")
-            else:
-                print("Nothing to export yet.\n")
-            continue
-
-        if user_input.lower() == "/selfplay":
-            print("Generating 10 self-play pairs...")
-            n = engine.generate_training_data(10)
-            print(f"Done. Added {n} pairs.\n")
             continue
 
         if user_input.lower() == "/memory":
@@ -168,11 +156,47 @@ Commands:
             print(f"Profile   : {m['user_profile_fields']} fields\n")
             continue
 
+        if user_input.lower() == "/train":
+            print("Running training cycle...")
+            result = engine.trigger_training()
+            print(f"Status: {result['status']} | Pairs: {result['pairs_used']}")
+            print(f"Notes: {result['notes']}\n")
+            continue
+
+        if user_input.lower().startswith("/generate"):
+            parts = user_input.split()
+            n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 20
+            print(f"Generating {n} self-play pairs...")
+            added = engine.generate_training_data(n)
+            ts = engine.trainer.status()
+            print(f"Added {added}. Total: {ts['total_pairs']} | Quality: {ts['quality_filter']['passed']}\n")
+            continue
+
+        if user_input.lower() == "/trainstatus":
+            ts = engine.trainer.status()
+            qf = ts["quality_filter"]
+            print(f"\nTrainer    : {'running' if ts['running'] else 'stopped'}")
+            print(f"Total pairs: {ts['total_pairs']}")
+            print(f"Quality    : {qf['passed']}/{qf['total']} ({qf['pass_rate']:.0%})")
+            print(f"Avg score  : {qf['avg_score']}")
+            print(f"Runs done  : {ts['training_runs']}\n")
+            continue
+
+        if user_input.lower() == "/export":
+            print("Exporting...")
+            path = engine.trainer.export_training_data()
+            if path:
+                print(f"Exported: {path}\n")
+            continue
+
         if user_input.lower() == "/status":
             s = engine.status()
             m, tr = s["memory"], s["training"]
             print(f"\nPhase    : {s['phase']}")
-            print(f"Model    : {'loaded' if s['model_loaded'] else 'not loaded'}")
+            print(f"Model    : {s['model']}")
+            print(f"Format   : {s['prompt_format']}")
+            print(f"Threads  : {s['threads']}")
+            print(f"Executor : {s['executor']}")
             print(f"Memory   : {m['episodic_entries']} episodes, {m['semantic_entities']} entities")
             print(f"Training : {tr['total_pairs']} pairs, {tr['quality_filter']['passed']} quality\n")
             continue
