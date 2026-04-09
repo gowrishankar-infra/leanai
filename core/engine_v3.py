@@ -83,19 +83,99 @@ def _optimal_threads(model_path: str) -> int:
 
 
 def _extract_code_blocks(text: str) -> list:
-    """Extract all code blocks from a response."""
+    """Extract code blocks from a response. Handles incomplete/unclosed blocks."""
     blocks = []
+
+    # 1. Try standard fenced code blocks: ```python ... ```
     pattern = re.compile(r"```(?:python|py|javascript|js|bash|sh)?\n?(.*?)```", re.DOTALL)
     for m in pattern.finditer(text):
-        blocks.append(m.group(1).strip())
-    # Also check for inline code that looks like a complete program
-    if not blocks:
-        lines = text.strip().split("\n")
-        code_lines = [l for l in lines if not l.startswith("#") and l.strip()]
-        if any(kw in text for kw in ["def ", "class ", "import ", "print(", "for ", "while "]):
-            if len(code_lines) > 1:
-                blocks.append(text.strip())
+        code = m.group(1).strip()
+        if code and len(code) > 5:
+            blocks.append(code)
+
+    if blocks:
+        return [_sanitize_code(b) for b in blocks]
+
+    # 2. Handle UNCLOSED code blocks (model truncated mid-response)
+    unclosed = re.compile(r"```(?:python|py)?\n(.*)", re.DOTALL)
+    m = unclosed.search(text)
+    if m:
+        code = m.group(1).strip()
+        lines = code.split("\n")
+        code_lines = []
+        for line in lines:
+            if (code_lines and
+                not line.startswith((" ", "\t", "def ", "class ", "import ", "from ",
+                                    "if ", "for ", "while ", "return ", "print(",
+                                    "#", "@", "}", "]", ")", "else:", "elif ",
+                                    "try:", "except", "finally:", "with ", "raise ",
+                                    "yield ", "async ", "await ", "")) and
+                line and line[0].isupper() and " " in line and len(line) > 30):
+                break
+            code_lines.append(line)
+        code = "\n".join(code_lines).strip()
+        if code and len(code) > 10:
+            blocks.append(_sanitize_code(code))
+
+    if blocks:
+        return blocks
+
+    # 3. Last resort: if the ENTIRE response looks like pure code (no prose)
+    lines = text.strip().split("\n")
+    has_code_keywords = any(kw in text for kw in ["def ", "class ", "import "])
+    prose_lines = sum(1 for l in lines if l.strip() and l.strip()[0].isupper()
+                      and ("." in l or "!" in l or ":" in l) and len(l.split()) > 5)
+    code_lines = sum(1 for l in lines if l.strip().startswith(("def ", "class ", "import ",
+                     "from ", "if ", "for ", "while ", "return ", "#", "@", "    ")))
+
+    if has_code_keywords and prose_lines == 0 and code_lines >= 2:
+        blocks.append(_sanitize_code(text.strip()))
+
     return blocks
+
+
+def _sanitize_code(code: str) -> str:
+    """
+    Validate code with ast.parse. If it fails, trim broken lines from the end
+    until it parses, or return the original if nothing works.
+    """
+    import ast
+
+    # Quick check — does it parse as-is?
+    try:
+        ast.parse(code)
+        return code
+    except SyntaxError:
+        pass
+
+    # Try trimming lines from the end (model truncated mid-function)
+    lines = code.split("\n")
+    for trim in range(1, min(len(lines), 15)):
+        trimmed = "\n".join(lines[:-trim])
+        if not trimmed.strip():
+            break
+        try:
+            ast.parse(trimmed)
+            return trimmed
+        except SyntaxError:
+            continue
+
+    # Try closing common unterminated constructs
+    fixups = [
+        code + '\n"""',          # close triple-quoted string
+        code + "\n'''",          # close single triple-quoted string
+        code + "\n    pass\n",   # close empty function body
+        code + "\n        pass\n",
+    ]
+    for fix in fixups:
+        try:
+            ast.parse(fix)
+            return fix
+        except SyntaxError:
+            continue
+
+    # Nothing worked — return original, executor will handle the error
+    return code
 
 
 class LeanAIEngineV3:
