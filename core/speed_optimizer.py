@@ -253,34 +253,43 @@ def get_max_tokens_for_query(query: str, model_size: str = "32b") -> int:
     """
     Determine optimal max_tokens based on query type.
     Short responses for simple queries = faster generation.
+    Generous for complex tasks to avoid truncation.
     """
     lower = query.lower()
     word_count = len(lower.split())
 
-    # Code generation (needs more tokens) — check FIRST
-    code_words = {"implement", "write", "code", "function", "class", "create", "build"}
+    # Code generation (needs lots of tokens for complete implementations)
+    code_words = {"implement", "write", "code", "function", "class", "create", "build",
+                  "design", "develop", "refactor", "complete", "full"}
     if any(w in lower for w in code_words):
-        return 1024
+        return 2048
 
-    # Detailed explanations
-    detail_words = {"explain", "detail", "comprehensive", "thorough", "compare", "analyze"}
-    if any(w in lower for w in detail_words):
-        return 768
+    # Reasoning/planning/analysis (needs room for multi-step thought)
+    reason_words = {"explain", "detail", "comprehensive", "thorough", "compare",
+                    "analyze", "reason", "plan", "decompose", "evaluate", "why",
+                    "how does", "describe", "architecture", "trade-off"}
+    if any(w in lower for w in reason_words):
+        return 1536
+
+    # Questions about files/code (need room to describe)
+    project_words = {"file", "module", "engine", "brain", "router", "what does"}
+    if any(w in lower for w in project_words):
+        return 1024
 
     # Very short queries → short responses
     if word_count <= 5:
-        return 256
+        return 384
 
     # Yes/no questions
     if lower.startswith(("is ", "are ", "does ", "do ", "can ", "will ", "should ")):
-        return 256
+        return 384
 
     # Definition questions
     if lower.startswith(("what is ", "what are ", "define ", "meaning of ")):
-        return 384
+        return 512
 
-    # Default
-    return 512
+    # Default — generous enough to avoid truncation
+    return 768
 
 
 class SpeedOptimizer:

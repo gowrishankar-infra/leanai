@@ -180,8 +180,8 @@ def _sanitize_code(code: str) -> str:
 
 def _is_safe_to_execute(code: str) -> bool:
     """
-    Check if code is safe to auto-execute.
-    Returns False for interactive code, infinite loops, file deletion, etc.
+    Check if code is safe to auto-execute in the sandbox.
+    Returns False for interactive code, project-specific imports, file deletion, etc.
     """
     unsafe_patterns = [
         "input(",           # waits for keyboard input → hangs
@@ -200,7 +200,18 @@ def _is_safe_to_execute(code: str) -> bool:
         if pattern.lower() in code_lower:
             return False
 
-    # Check for while True with no obvious break condition
+    # Skip code that imports from the project itself — can't work in sandbox
+    project_imports = [
+        "from core.", "from brain.", "from tools.", "from training.",
+        "from agents.", "from swarm.", "from memory.", "from api.",
+        "from federated.", "from speculative.", "from liquid.", "from hdc.",
+        "import core.", "import brain.", "import tools.",
+    ]
+    for pattern in project_imports:
+        if pattern in code:
+            return False
+
+    # Check for while True with input
     if "while true" in code_lower and "input(" in code_lower:
         return False
 
@@ -249,7 +260,7 @@ class LeanAIEngineV3:
         print(f"[LeanAI v3] Memory: {self.memory.episodic.backend}")
         print(f"[LeanAI v3] Training: {self.store.stats()['total']} pairs")
 
-    def generate(self, query, config=None):
+    def generate(self, query, config=None, project_context=""):
         config = config or GenerationConfig()
         start  = time.time()
         decision = self.router.route(query, self.memory.working.current_tokens)
@@ -282,7 +293,8 @@ class LeanAIEngineV3:
         mem_ctx  = self.memory.prepare_context(query)
         mem_used = bool(mem_ctx)
         prompt   = self._build_prompt(query, mem_ctx,
-                                       self.memory.working.get_context_window(max_tokens=512))
+                                       self.memory.working.get_context_window(max_tokens=512),
+                                       project_context=project_context)
         response_text = self._generate_with_model(prompt, config)
 
         # Code execution
@@ -420,16 +432,26 @@ class LeanAIEngineV3:
             text = text.split(token)[0].strip()
         return text
 
-    def _build_prompt(self, query, memory_context, history):
+    def _build_prompt(self, query, memory_context, history, project_context=""):
         system = (
             "You are LeanAI — an expert coding AI assistant. "
             "You excel at Python, JavaScript, TypeScript, Go, Rust, SQL, bash. "
             "Provide clean, working, well-commented code. "
             "Stop after answering. No follow-up questions."
         )
+
+        # Inject project context (from smart context — brain, git, sessions)
+        if project_context:
+            system += (
+                "\n\nIMPORTANT — The user's ACTUAL project context is below. "
+                "Use it to give specific answers about THEIR code, not generic examples:\n"
+                + project_context[:1500]
+            )
+
+        # Inject memory context
         if memory_context:
-            ctx = memory_context[:200].replace("\n", " ")
-            system = system + " Context: " + ctx
+            ctx = memory_context[:500].replace("\n", " ")
+            system += "\nMemory: " + ctx
 
         if self.prompt_format == "chatml":
             parts = ["<|im_start|>system\n" + system + "<|im_end|>\n"]

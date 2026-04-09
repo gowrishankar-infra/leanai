@@ -138,9 +138,18 @@ COMPLEX_INDICATORS = {
     "algorithm", "data structure", "dynamic programming",
     "concurrent", "async", "parallel", "thread",
     "knapsack", "graph traversal", "binary tree",
+    # Complex data structures
+    "lru", "cache", "ttl", "expiration", "thread-safe", "thread safe",
+    "lock-free", "lockfree", "atomic",
+    "rate limiter", "rate limit", "circuit breaker",
+    "load balancer", "connection pool",
     # Debugging complex issues
     "race condition", "memory leak", "deadlock", "performance issue",
     "security vulnerability",
+    # Architecture patterns
+    "decorator", "singleton", "factory", "observer", "strategy",
+    "middleware", "pipeline", "event driven", "pub sub",
+    "message queue", "websocket",
 }
 
 SIMPLE_INDICATORS = {

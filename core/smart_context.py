@@ -85,37 +85,53 @@ class SmartContext:
         return "\n\n".join(parts)
 
     def _get_brain_context(self, query: str) -> str:
-        """Get relevant project structure context."""
+        """Get relevant project structure context with actual code content."""
         try:
-            # Check if query mentions specific files
             ctx_parts = []
             query_lower = query.lower()
 
-            # Find mentioned files
-            for rel_path in list(self.brain._file_analyses.keys())[:100]:
-                fname = os.path.basename(rel_path).lower()
-                if fname.replace(".py", "") in query_lower or rel_path.lower() in query_lower:
+            # Find mentioned files and inject their actual description
+            matched_file = False
+            for rel_path in list(self.brain._file_analyses.keys())[:200]:
+                fname = os.path.basename(rel_path).lower().replace(".py", "")
+                # Match filename without extension in query
+                if fname in query_lower and len(fname) > 2:
                     desc = self.brain.describe_file(rel_path)
                     if desc and "not indexed" not in desc.lower():
-                        ctx_parts.append(f"[File] {desc[:400]}")
-                        break  # only include most relevant file
-
-            # Find mentioned functions
-            for func_name in list(self.brain.graph._function_lookup.keys())[:200]:
-                if func_name.lower() in query_lower and len(func_name) > 3:
-                    info = self.brain.find_function(func_name)
-                    if info and "not found" not in info.lower():
-                        ctx_parts.append(f"[Function] {info[:300]}")
+                        ctx_parts.append(f"[File: {rel_path}]\n{desc[:600]}")
+                        matched_file = True
                         break
 
-            # Always include brief project summary if brain is active
-            if not ctx_parts:
-                stats = self.brain.graph.stats()
-                ctx_parts.append(
-                    f"[Project] {stats['files']} files, "
-                    f"{stats['functions']} functions, "
-                    f"{stats['classes']} classes"
-                )
+            # If no specific file matched, try partial matches
+            if not matched_file:
+                for rel_path in list(self.brain._file_analyses.keys())[:200]:
+                    fname = os.path.basename(rel_path).lower()
+                    # Check if any word in the query matches a filename
+                    for word in query_lower.split():
+                        if len(word) > 3 and word in fname:
+                            desc = self.brain.describe_file(rel_path)
+                            if desc and "not indexed" not in desc.lower():
+                                ctx_parts.append(f"[File: {rel_path}]\n{desc[:600]}")
+                                matched_file = True
+                                break
+                    if matched_file:
+                        break
+
+            # Find mentioned functions with details
+            for func_name in list(self.brain.graph._function_lookup.keys())[:300]:
+                if len(func_name) > 3 and func_name.lower() in query_lower:
+                    info = self.brain.find_function(func_name)
+                    if info and "not found" not in info.lower():
+                        ctx_parts.append(f"[Function: {func_name}]\n{info[:400]}")
+                        break
+
+            # Always include project summary
+            stats = self.brain.graph.stats()
+            ctx_parts.append(
+                f"[Project: {os.path.basename(self.brain.config.project_path)}] "
+                f"{stats['files']} files, {stats['functions']} functions, "
+                f"{stats['classes']} classes, {stats['edges']} dependency edges"
+            )
 
             return "\n".join(ctx_parts) if ctx_parts else ""
         except Exception:
@@ -192,7 +208,9 @@ class SmartContext:
 
         return (
             f"{base_system}\n\n"
-            f"Context about the user's project and history:\n"
+            f"IMPORTANT: You have access to the user's actual project. "
+            f"Use the following real context to give specific, accurate answers. "
+            f"Do NOT give generic examples — refer to the ACTUAL code below:\n\n"
             f"{context}\n\n"
-            f"Use this context to give more specific, relevant answers."
+            f"Answer based on this real project context. Be specific, not generic."
         )

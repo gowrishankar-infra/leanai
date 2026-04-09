@@ -980,11 +980,14 @@ def main():
 
                 # Auto-recovery wrapped generation
                 def do_generate(max_tokens, **kw):
-                    return engine.generate(user_input, config=GenerationConfig(max_tokens=max_tokens))
+                    return engine.generate(user_input,
+                                           config=GenerationConfig(max_tokens=max_tokens),
+                                           project_context=enriched_context)
 
                 def do_fallback(max_tokens, **kw):
-                    # If primary fails (e.g. OOM on 32B), try with smaller tokens
-                    return engine.generate(user_input, config=GenerationConfig(max_tokens=max(max_tokens // 2, 128)))
+                    return engine.generate(user_input,
+                                           config=GenerationConfig(max_tokens=max(max_tokens // 2, 128)),
+                                           project_context=enriched_context)
 
                 rec_result = recovery.safe_generate(
                     generate_fn=do_generate,

@@ -145,11 +145,12 @@ class ProjectBrain:
 
                 files_found += 1
 
-                # Check if file changed
+                # Check if file changed OR if we're missing analysis data
                 mtime = os.path.getmtime(filepath)
                 old_state = self._file_states.get(rel_path)
+                has_analysis = rel_path in self._file_analyses
 
-                if not force and old_state and old_state.last_modified >= mtime:
+                if not force and old_state and old_state.last_modified >= mtime and has_analysis:
                     files_unchanged += 1
                     continue
 

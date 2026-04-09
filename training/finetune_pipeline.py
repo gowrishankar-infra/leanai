@@ -129,12 +129,12 @@ class TrainingDataPipeline:
         """
         Add a training example. Returns True if added, False if duplicate.
         """
-        # Skip too short or too long
-        if len(instruction) < 10 or len(response) < 20:
+        # Skip truly empty content
+        if len(instruction.strip()) < 5 or len(response.strip()) < 10:
             return False
-        if len(instruction) > 2000 or len(response) > 4000:
-            # Truncate long responses
-            response = response[:4000]
+        # Truncate very long responses
+        if len(response) > 5000:
+            response = response[:5000]
 
         example = TrainingExample(
             instruction=instruction,

@@ -79,22 +79,22 @@ class TestResponseCache:
 
 class TestMaxTokens:
     def test_short_query(self):
-        assert get_max_tokens_for_query("hello") == 256
+        assert get_max_tokens_for_query("hello") == 384
 
     def test_yes_no_question(self):
-        assert get_max_tokens_for_query("Is Python interpreted?") == 256
+        assert get_max_tokens_for_query("Is Python interpreted?") == 384
 
     def test_definition(self):
-        assert get_max_tokens_for_query("What is a decorator in Python programming?") == 384
+        assert get_max_tokens_for_query("What is a decorator in Python programming?") == 512
 
     def test_code_generation(self):
-        assert get_max_tokens_for_query("implement a binary search") == 1024
+        assert get_max_tokens_for_query("implement a binary search") == 2048
 
     def test_detailed_explanation(self):
-        assert get_max_tokens_for_query("explain how transformers work in detail") == 768
+        assert get_max_tokens_for_query("explain how transformers work in detail") == 1536
 
     def test_default(self):
-        assert get_max_tokens_for_query("tell me about the weather patterns in monsoon season") == 512
+        assert get_max_tokens_for_query("tell me about the weather patterns in monsoon season") == 768
 
 
 class TestOptimalParams:
@@ -134,7 +134,7 @@ class TestSpeedOptimizer:
 
     def test_get_max_tokens(self, optimizer):
         t = optimizer.get_max_tokens("implement a sorting function")
-        assert t == 1024
+        assert t == 2048
 
     def test_get_model_params(self, optimizer):
         p = optimizer.get_model_params(18.0)
