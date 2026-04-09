@@ -178,6 +178,35 @@ def _sanitize_code(code: str) -> str:
     return code
 
 
+def _is_safe_to_execute(code: str) -> bool:
+    """
+    Check if code is safe to auto-execute.
+    Returns False for interactive code, infinite loops, file deletion, etc.
+    """
+    unsafe_patterns = [
+        "input(",           # waits for keyboard input → hangs
+        "getpass",          # waits for password input
+        "sys.stdin",        # reads from stdin
+        "os.remove(",       # deletes files
+        "os.rmdir(",        # deletes directories
+        "shutil.rmtree(",   # deletes directory trees
+        "os.system(",       # shell commands
+        "subprocess.call(",  # shell commands
+        "exit(",            # exits the process
+        "quit(",            # exits the process
+    ]
+    code_lower = code.lower()
+    for pattern in unsafe_patterns:
+        if pattern.lower() in code_lower:
+            return False
+
+    # Check for while True with no obvious break condition
+    if "while true" in code_lower and "input(" in code_lower:
+        return False
+
+    return True
+
+
 class LeanAIEngineV3:
 
     def __init__(self, model_path=None, verbose=False, auto_train=True, auto_execute=True):
@@ -262,6 +291,8 @@ class LeanAIEngineV3:
 
         if self.auto_execute and decision.requires_tools:
             code_blocks = _extract_code_blocks(response_text)
+            # Filter out code that's unsafe to auto-execute
+            code_blocks = [b for b in code_blocks if _is_safe_to_execute(b)]
             if code_blocks:
                 verified = self.executor.execute_and_verify(code_blocks[0])
                 code_executed  = True

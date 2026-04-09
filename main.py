@@ -16,6 +16,9 @@ from core.model_manager import ModelManager, classify_complexity
 from core.reasoning_engine import ReasoningEngine
 from core.writing_engine import WritingEngine
 from core.speed_optimizer import SpeedOptimizer
+from core.streaming import StreamingGenerator, StreamConfig, print_streaming_header, print_streaming_footer
+from core.smart_context import SmartContext
+from core.auto_recovery import AutoRecovery, RecoveryConfig
 from tools.executor import CodeExecutor
 from tools.indexer import ProjectIndexer
 from agents.build_command import BuildHandler
@@ -141,9 +144,21 @@ def main():
     ft_adapters = AdapterManager()
     ft_runner = FineTuneRunner(pipeline=ft_pipeline, adapter_mgr=ft_adapters)
 
+    # ── Streaming ─────────────────────────────────────────────────
+    streamer = StreamingGenerator(model=None, prompt_format="chatml", config=StreamConfig())
+
+    # ── Auto-Recovery ─────────────────────────────────────────────
+    recovery = AutoRecovery(
+        config=RecoveryConfig(max_retries=2, oom_fallback_enabled=True),
+        on_fallback=lambda err: print(f"\n  [Recovery] {err[:80]}\n  [Recovery] Falling back to smaller model...", flush=True),
+    )
+
     # ── Phase 7e: Session continuity ──────────────────────────────
     sessions = SessionStore()
     current_session = sessions.new_session(project_path=os.path.abspath("."))
+
+    # ── Smart Context (after sessions is created) ─────────────────
+    smart_ctx = SmartContext(brain=None, git_intel=git_intel, session_store=sessions, hdc=hdc)
 
     # ══════════════════════════════════════════════════════════════
     # STARTUP DISPLAY
@@ -346,6 +361,7 @@ def main():
             result = brain.scan()
             editor = MultiFileEditor(path)  # update editor too
             git_intel = GitIntel(path)  # update git too
+            smart_ctx = SmartContext(brain=brain, git_intel=git_intel, session_store=sessions, hdc=hdc)
             print(f"[Brain] Scanned {result['files_found']} files in {result['scan_time_ms']}ms")
             print(brain.project_summary())
 
@@ -884,6 +900,7 @@ def main():
 
         else:
             start = time.time()
+            enriched_context = ""
 
             # Speed: Check response cache first
             cached = speed.should_use_cache(user_input)
@@ -953,11 +970,35 @@ def main():
             if brain:
                 brain_ctx = brain.get_context_for_query(user_input)
 
-            # Generate response
+            # Generate response with smart context + auto-recovery
             try:
                 # Speed: Use optimal max_tokens for this query
                 smart_tokens = speed.get_max_tokens(user_input)
-                resp = engine.generate(user_input, config=GenerationConfig(max_tokens=smart_tokens))
+
+                # Smart context: build enriched context
+                enriched_context = smart_ctx.build(user_input)
+
+                # Auto-recovery wrapped generation
+                def do_generate(max_tokens, **kw):
+                    return engine.generate(user_input, config=GenerationConfig(max_tokens=max_tokens))
+
+                def do_fallback(max_tokens, **kw):
+                    # If primary fails (e.g. OOM on 32B), try with smaller tokens
+                    return engine.generate(user_input, config=GenerationConfig(max_tokens=max(max_tokens // 2, 128)))
+
+                rec_result = recovery.safe_generate(
+                    generate_fn=do_generate,
+                    max_tokens=smart_tokens,
+                    fallback_fn=do_fallback,
+                )
+
+                if rec_result.success:
+                    resp = rec_result.text  # this is the LeanAIResponse object
+                    if rec_result.recovered:
+                        print(f"  [Recovery] Recovered: {rec_result.recovery_note}")
+                else:
+                    print(f"\nError: {rec_result.error}")
+                    continue
             except Exception as e:
                 print(f"\nError: {e}")
                 continue
@@ -1012,6 +1053,8 @@ def main():
                 meta += "  Memory: active"
             if code_exec and code_passed:
                 meta += "  Code: verified"
+            if enriched_context:
+                meta += "  Context: enriched"
 
             print("───────────────────────────────────────────────────────")
             print(meta)
