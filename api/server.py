@@ -39,6 +39,13 @@ from tools.indexer import ProjectIndexer
 from agents.build_command import BuildHandler
 from agents.pipeline import PipelineConfig
 from swarm import SwarmConsensus
+from liquid import LiquidRouter
+from hdc import HDKnowledgeStore
+from brain.project_brain import ProjectBrain
+from brain.git_intel import GitIntel
+from brain.tdd_loop import TDDLoop, TDDConfig
+from brain.editor import MultiFileEditor
+from brain.session_store import SessionStore
 
 
 # ── Request/Response models ───────────────────────────────────────
@@ -125,6 +132,7 @@ class StatusResponse(BaseModel):
 async def lifespan(app):
     """Initialize all LeanAI components on startup."""
     global engine, executor, indexer, build_handler, swarm
+    global liquid_router, hdc, brain, git_intel, tdd, editor_inst, session_store
 
     print("[API] Initializing LeanAI engine...")
     engine = LeanAIEngineV3(verbose=False)
@@ -133,6 +141,12 @@ async def lifespan(app):
     indexer = ProjectIndexer()
     build_handler = BuildHandler(model_fn=_model_fn, verbose=False)
     swarm = SwarmConsensus(model_fn=_swarm_model_fn, num_passes=3, verbose=False)
+    liquid_router = LiquidRouter()
+    hdc = HDKnowledgeStore()
+    git_intel = GitIntel(".")
+    tdd = TDDLoop(model_fn=_model_fn, config=TDDConfig(verbose=False))
+    editor_inst = MultiFileEditor(".")
+    session_store = SessionStore()
 
     print("[API] LeanAI ready at http://localhost:8000")
     print("[API] Web UI at http://localhost:8000/")
@@ -162,6 +176,13 @@ executor: Optional[CodeExecutor] = None
 indexer: Optional[ProjectIndexer] = None
 build_handler: Optional[BuildHandler] = None
 swarm: Optional[SwarmConsensus] = None
+liquid_router: Optional[LiquidRouter] = None
+hdc: Optional[HDKnowledgeStore] = None
+brain: Optional[ProjectBrain] = None
+git_intel: Optional[GitIntel] = None
+tdd: Optional[TDDLoop] = None
+editor_inst: Optional[MultiFileEditor] = None
+session_store: Optional[SessionStore] = None
 
 
 def _model_fn(system_prompt: str, user_prompt: str) -> str:
@@ -399,7 +420,7 @@ async def get_status():
         pass
 
     return StatusResponse(
-        version="5.0",
+        version="7.0",
         model=getattr(engine, "model_name", "unknown"),
         prompt_format=getattr(engine, "prompt_format", "unknown"),
         threads=getattr(engine, "n_threads", 0),
@@ -410,6 +431,94 @@ async def get_status():
         training_pairs=training_pairs,
         model_loaded=engine._model is not None,
     )
+
+
+# ── Phase 7 endpoints ─────────────────────────────────────────────
+
+@app.post("/brain/scan")
+async def brain_scan(req: IndexRequest):
+    """Scan a project with the Project Brain."""
+    global brain, editor_inst, git_intel
+    path = os.path.abspath(req.path)
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=400, detail=f"Not a directory: {path}")
+    brain = ProjectBrain(path)
+    editor_inst = MultiFileEditor(path)
+    git_intel = GitIntel(path)
+    result = brain.scan(force=req.force)
+    return result
+
+@app.get("/brain/summary")
+async def brain_summary():
+    """Get project summary."""
+    if not brain:
+        return {"error": "No project scanned. POST /brain/scan first."}
+    return {"summary": brain.project_summary()}
+
+@app.post("/brain/describe")
+async def brain_describe(req: AskRequest):
+    """Describe a file."""
+    if not brain:
+        return {"error": "No project scanned."}
+    return {"description": brain.describe_file(req.query)}
+
+@app.post("/brain/find")
+async def brain_find(req: AskRequest):
+    """Find a function."""
+    if not brain:
+        return {"error": "No project scanned."}
+    return {"result": brain.find_function(req.query)}
+
+@app.post("/brain/impact")
+async def brain_impact(req: AskRequest):
+    """Impact analysis."""
+    if not brain:
+        return {"error": "No project scanned."}
+    return {"impact": brain.impact_of_changing(req.query)}
+
+@app.get("/git/activity")
+async def git_activity():
+    """Recent git activity."""
+    return {"activity": git_intel.recent_activity(days=7)}
+
+@app.get("/git/hotspots")
+async def git_hotspots():
+    """File change hotspots."""
+    return {"hotspots": git_intel.hotspots()}
+
+@app.get("/git/changelog")
+async def git_changelog():
+    """Auto-generated changelog."""
+    return {"changelog": git_intel.generate_changelog()}
+
+@app.post("/refs")
+async def find_refs(req: AskRequest):
+    """Find all references to a symbol."""
+    return {"references": editor_inst.find_references_summary(req.query)}
+
+@app.post("/tdd")
+async def run_tdd(req: AskRequest):
+    """Run TDD loop with test code."""
+    if not engine._model:
+        engine._load_model()
+    result = tdd.run(req.query)
+    return {
+        "success": result.success,
+        "implementation": result.implementation,
+        "module": result.module_name,
+        "attempts": result.num_attempts,
+        "summary": result.summary(),
+    }
+
+@app.get("/sessions")
+async def list_sessions():
+    """List past sessions."""
+    return {"sessions": session_store.list_sessions_summary()}
+
+@app.post("/sessions/search")
+async def search_sessions(req: AskRequest):
+    """Search past conversations."""
+    return {"results": session_store.search_summary(req.query)}
 
 
 # ── Web UI ────────────────────────────────────────────────────────
@@ -533,8 +642,11 @@ WEB_UI_HTML = """<!DOCTYPE html>
 
 <div class="mode-bar">
   <button class="active" onclick="setMode('chat')" id="btn-chat">Chat</button>
-  <button onclick="setMode('swarm')" id="btn-swarm">Swarm (3-pass)</button>
+  <button onclick="setMode('swarm')" id="btn-swarm">Swarm</button>
   <button onclick="setMode('run')" id="btn-run">Run Code</button>
+  <button onclick="setMode('tdd')" id="btn-tdd">TDD</button>
+  <button onclick="setMode('brain')" id="btn-brain">Brain</button>
+  <button onclick="setMode('git')" id="btn-git">Git</button>
 </div>
 
 <div id="chat"></div>
@@ -553,7 +665,14 @@ function setMode(m) {
   MODE = m;
   document.querySelectorAll('.mode-bar button').forEach(b => b.classList.remove('active'));
   document.getElementById('btn-' + m).classList.add('active');
-  const ph = {chat: 'Ask LeanAI anything...', swarm: 'Ask with 3-pass consensus...', run: 'Enter Python code to execute...'};
+  const ph = {
+    chat: 'Ask LeanAI anything...',
+    swarm: 'Ask with 3-pass consensus...',
+    run: 'Enter Python code to execute...',
+    tdd: 'Paste test code (from X import ...) ...',
+    brain: 'Enter project path to scan (or . for current)...',
+    git: 'Enter: activity, hotspots, or changelog...',
+  };
   document.getElementById('input').placeholder = ph[m] || '';
 }
 
@@ -620,6 +739,39 @@ async function send() {
       loading.innerHTML = '<pre><code>' + escHtml(data.output || data.error || 'No output') + '</code></pre>';
       loading.innerHTML += '<div class="meta">' + status +
         '<span>' + data.execution_time_ms + 'ms</span></div>';
+    } else if (MODE === 'tdd') {
+      const res = await fetch('/tdd', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query: msg})
+      });
+      data = await res.json();
+      const status = data.success ? '<span class="good">PASSED</span>' : '<span class="warn">FAILED</span>';
+      loading.innerHTML = '<pre><code>' + escHtml(data.implementation || 'No code generated') + '</code></pre>';
+      loading.innerHTML += '<div class="meta">' + status +
+        '<span class="tag">' + data.attempts + ' attempts</span>' +
+        '<span>' + (data.module || '') + '.py</span></div>';
+    } else if (MODE === 'brain') {
+      const res = await fetch('/brain/scan', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: msg || '.'})
+      });
+      data = await res.json();
+      if (data.error) {
+        loading.innerHTML = '<span class="warn">' + escHtml(data.error) + '</span>';
+      } else {
+        loading.innerHTML = '<pre><code>Scanned ' + (data.files_found || 0) + ' files in ' + (data.scan_time_ms || 0) + 'ms\\n' +
+          'Functions: ' + (data.graph?.functions || 0) + '\\n' +
+          'Classes: ' + (data.graph?.classes || 0) + '\\n' +
+          'Edges: ' + (data.graph?.edges || 0) + '</code></pre>';
+      }
+    } else if (MODE === 'git') {
+      let endpoint = '/git/activity';
+      if (msg.includes('hotspot')) endpoint = '/git/hotspots';
+      else if (msg.includes('changelog')) endpoint = '/git/changelog';
+      const res = await fetch(endpoint);
+      data = await res.json();
+      const content = data.activity || data.hotspots || data.changelog || 'No data';
+      loading.innerHTML = '<pre><code>' + escHtml(content) + '</code></pre>';
     } else {
       const res = await fetch('/chat', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
