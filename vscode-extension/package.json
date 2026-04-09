@@ -1,0 +1,132 @@
+{
+  "name": "leanai",
+  "displayName": "LeanAI — Local AI Coding Assistant",
+  "description": "Project-aware AI that runs locally. Chat, explain code, generate tests, refactor — all offline.",
+  "version": "1.0.0",
+  "publisher": "gowrishankar",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "coding",
+    "local",
+    "offline",
+    "assistant"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "leanai.chat",
+        "title": "LeanAI: Ask a Question"
+      },
+      {
+        "command": "leanai.explainSelection",
+        "title": "LeanAI: Explain Selected Code"
+      },
+      {
+        "command": "leanai.fixSelection",
+        "title": "LeanAI: Fix Selected Code"
+      },
+      {
+        "command": "leanai.generateTests",
+        "title": "LeanAI: Generate Tests for This File"
+      },
+      {
+        "command": "leanai.swarm",
+        "title": "LeanAI: Ask with Swarm Consensus"
+      },
+      {
+        "command": "leanai.runCode",
+        "title": "LeanAI: Run Selected Code"
+      },
+      {
+        "command": "leanai.scanProject",
+        "title": "LeanAI: Scan Project (Brain)"
+      },
+      {
+        "command": "leanai.findRefs",
+        "title": "LeanAI: Find All References"
+      },
+      {
+        "command": "leanai.gitActivity",
+        "title": "LeanAI: Git Activity (Last 7 Days)"
+      },
+      {
+        "command": "leanai.gitHotspots",
+        "title": "LeanAI: Git Hotspots"
+      },
+      {
+        "command": "leanai.showPanel",
+        "title": "LeanAI: Open Chat Panel"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "leanai.chat",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l"
+      },
+      {
+        "command": "leanai.explainSelection",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "leanai.fixSelection",
+        "key": "ctrl+shift+f",
+        "mac": "cmd+shift+f",
+        "when": "editorHasSelection"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "leanai.explainSelection",
+          "group": "leanai",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "leanai.fixSelection",
+          "group": "leanai",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "leanai.runCode",
+          "group": "leanai",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "leanai.generateTests",
+          "group": "leanai"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "LeanAI",
+      "properties": {
+        "leanai.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000",
+          "description": "URL of the LeanAI server"
+        },
+        "leanai.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically check if LeanAI server is running on startup"
+        }
+      }
+    }
+  }
+}

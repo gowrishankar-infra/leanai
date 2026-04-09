@@ -403,10 +403,27 @@ class ProjectBrain:
         return "\n".join(context_parts)
 
     def _resolve_path(self, filepath: str) -> str:
-        """Resolve a filepath to a relative path used in the index."""
+        """Resolve a filepath to match the keys used in the index.
+        Handles both / and \\ separators on all platforms."""
         if os.path.isabs(filepath):
-            return os.path.relpath(filepath, self.config.project_path)
-        return filepath
+            rel = os.path.relpath(filepath, self.config.project_path)
+        else:
+            rel = filepath
+        # Normalize separators — try both forms
+        rel_fwd = rel.replace("\\", "/")
+        rel_back = rel.replace("/", "\\")
+        # Check which form exists in our index
+        if rel in self._file_analyses:
+            return rel
+        if rel_fwd in self._file_analyses:
+            return rel_fwd
+        if rel_back in self._file_analyses:
+            return rel_back
+        # Try os.path.normpath
+        normed = os.path.normpath(rel)
+        if normed in self._file_analyses:
+            return normed
+        return rel  # return as-is, caller handles "not found"
 
     # ── Persistence ───────────────────────────────────────────────
 
