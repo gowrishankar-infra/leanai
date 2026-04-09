@@ -13,6 +13,9 @@ import re
 # ── Core engine ───────────────────────────────────────────────────
 from core.engine_v3 import LeanAIEngineV3 as LeanAIEngine, GenerationConfig
 from core.model_manager import ModelManager, classify_complexity
+from core.reasoning_engine import ReasoningEngine
+from core.writing_engine import WritingEngine
+from core.speed_optimizer import SpeedOptimizer
 from tools.executor import CodeExecutor
 from tools.indexer import ProjectIndexer
 from agents.build_command import BuildHandler
@@ -28,6 +31,9 @@ from brain.git_intel import GitIntel
 from brain.tdd_loop import TDDLoop, TDDConfig
 from brain.editor import MultiFileEditor
 from brain.session_store import SessionStore
+from training.finetune_pipeline import TrainingDataPipeline
+from training.adapter_manager import AdapterManager
+from training.finetune_runner import FineTuneRunner, TrainingConfig
 
 
 BANNER = """
@@ -121,6 +127,20 @@ def main():
     # ── Phase 7d: Multi-file editor ───────────────────────────────
     editor = MultiFileEditor(".")
 
+    # ── Reasoning Engine (chain-of-thought + self-critique) ───────
+    reasoner = ReasoningEngine(model_fn=model_fn)
+
+    # ── Writing Engine (outline → draft → edit) ──────────────────
+    writer = WritingEngine(model_fn=model_fn)
+
+    # ── Speed Optimizer (caching + optimization) ─────────────────
+    speed = SpeedOptimizer()
+
+    # ── Continuous Fine-Tuning ────────────────────────────────────
+    ft_pipeline = TrainingDataPipeline()
+    ft_adapters = AdapterManager()
+    ft_runner = FineTuneRunner(pipeline=ft_pipeline, adapter_mgr=ft_adapters)
+
     # ── Phase 7e: Session continuity ──────────────────────────────
     sessions = SessionStore()
     current_session = sessions.new_session(project_path=os.path.abspath("."))
@@ -158,15 +178,20 @@ def main():
     print(f"Sessions : {sessions.total_sessions} past | {sessions.total_exchanges} exchanges")
     print(f"Git      : {'active' if git_intel.is_available else 'not a repo'} | branch: {git_intel.current_branch()}")
     print(f"Router   : liquid adaptive (learns from every query)")
+    active_adapter = ft_adapters.get_active()
+    print(f"FineTune : {ft_pipeline.count} training pairs | adapter: {active_adapter.name if active_adapter else 'none'}")
     print(f"")
     print(f"Commands:")
     print(f"  Chat:     just type | /swarm <q>  | /run <code>")
     print(f"  Build:    /build <task> | /tdd <tests> | /tdd-desc <description>")
+    print(f"  Reason:   /reason <q> | /plan <task> | /decompose <problem>")
+    print(f"  Write:    /write <doc> | /essay <topic> | /report <topic>")
     print(f"  Project:  /brain <path> | /describe <file> | /deps <file> | /impact <file>")
     print(f"  Git:      /git activity | /git hotspots | /git history <file> | /git changelog")
     print(f"  Refactor: /refs <symbol> | /rename <old> <new>")
     print(f"  Memory:   /remember <fact> | /profile | /sessions | /continue")
-    print(f"  System:   /status | /help | /quit")
+    print(f"  FineTune: /finetune status | /finetune train | /finetune adapters")
+    print(f"  System:   /model <cmd> | /speed | /status | /help | /quit")
 
     # ══════════════════════════════════════════════════════════════
     # COMMAND LOOP
@@ -208,6 +233,16 @@ def main():
 ║  /build <task>     Multi-step project builder           ║
 ║  /tdd <tests>      Write code until tests pass         ║
 ║  /tdd-desc <text>  Generate tests + code from desc     ║
+║                                                        ║
+║ REASONING (3-pass: think → critique → refine)          ║
+║  /reason <question> Deep reasoning with self-critique  ║
+║  /plan <task>       Structured plan with phases        ║
+║  /decompose <prob>  Break into sub-problems            ║
+║                                                        ║
+║ WRITING (4-pass: analyze → outline → draft → edit)     ║
+║  /write <doc>      Any document type (auto-detected)   ║
+║  /essay <topic>    Academic essay                      ║
+║  /report <topic>   Professional report                 ║
 ║                                                        ║
 ║ PROJECT BRAIN                                          ║
 ║  /brain <path>     Scan & index a project              ║
@@ -577,6 +612,105 @@ def main():
                 print(f"Error: {e}")
 
         # ══════════════════════════════════════════════════════════
+        # REASONING COMMANDS
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/reason") or cmd.startswith("/think"):
+            query = user_input.split(None, 1)[1] if " " in user_input else ""
+            if not query:
+                print("Usage: /reason <complex question>")
+                continue
+            if not engine._model:
+                print("[LeanAI] Loading model...", flush=True)
+                engine._load_model()
+            print("[Reasoning] 3-pass: think → critique → refine...", flush=True)
+            result = reasoner.reason(query, verbose=True)
+            print(f"\nLeanAI (reasoned):\n{result.final_answer}")
+            print(f"───────────────────────────────────────────────────────")
+            print(f"{result.summary()}")
+            sessions.add_exchange(query=user_input, response=result.final_answer, tier="reasoning")
+
+        elif cmd.startswith("/plan"):
+            query = user_input[5:].strip()
+            if not query:
+                print("Usage: /plan <what to plan>")
+                continue
+            if not engine._model:
+                print("[LeanAI] Loading model...", flush=True)
+                engine._load_model()
+            print("[Planning] Generating structured plan...", flush=True)
+            result = reasoner.plan(query, verbose=True)
+            print(f"\nLeanAI (plan):\n{result.final_answer}")
+            print(f"───────────────────────────────────────────────────────")
+            print(f"{result.summary()}")
+            sessions.add_exchange(query=user_input, response=result.final_answer, tier="planning")
+
+        elif cmd.startswith("/decompose"):
+            query = user_input[10:].strip()
+            if not query:
+                print("Usage: /decompose <complex problem>")
+                continue
+            if not engine._model:
+                print("[LeanAI] Loading model...", flush=True)
+                engine._load_model()
+            print("[Decompose] Breaking into sub-problems...", flush=True)
+            result = reasoner.decompose(query, verbose=True)
+            print(f"\nLeanAI (decomposed):\n{result.final_answer}")
+            print(f"───────────────────────────────────────────────────────")
+            print(f"{result.summary()}")
+            sessions.add_exchange(query=user_input, response=result.final_answer, tier="decompose")
+
+        # ══════════════════════════════════════════════════════════
+        # WRITING COMMANDS
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/write"):
+            query = user_input[6:].strip()
+            if not query:
+                print("Usage: /write <what to write>")
+                print("  /write blog post about AI trends")
+                print("  /write proposal for new CI/CD pipeline")
+                print("  /write README for my project")
+                continue
+            if not engine._model:
+                print("[LeanAI] Loading model...", flush=True)
+                engine._load_model()
+            print("[Writing] 4-pass: analyze → outline → draft → edit...", flush=True)
+            result = writer.write(query, verbose=True)
+            print(f"\nLeanAI ({result.doc_type}):\n{result.final_text}")
+            print(f"───────────────────────────────────────────────────────")
+            print(f"{result.summary()}")
+            sessions.add_exchange(query=user_input, response=result.final_text, tier="writing")
+
+        elif cmd.startswith("/essay"):
+            topic = user_input[6:].strip()
+            if not topic:
+                print("Usage: /essay <topic>")
+                continue
+            if not engine._model:
+                engine._load_model()
+            print("[Writing] Essay: outline → draft → edit...", flush=True)
+            result = writer.write(topic, doc_type="essay", verbose=True)
+            print(f"\nLeanAI (essay):\n{result.final_text}")
+            print(f"───────────────────────────────────────────────────────")
+            print(f"{result.summary()}")
+            sessions.add_exchange(query=user_input, response=result.final_text, tier="writing")
+
+        elif cmd.startswith("/report"):
+            topic = user_input[7:].strip()
+            if not topic:
+                print("Usage: /report <topic>")
+                continue
+            if not engine._model:
+                engine._load_model()
+            print("[Writing] Report: outline → draft → edit...", flush=True)
+            result = writer.write(topic, doc_type="report", verbose=True)
+            print(f"\nLeanAI (report):\n{result.final_text}")
+            print(f"───────────────────────────────────────────────────────")
+            print(f"{result.summary()}")
+            sessions.add_exchange(query=user_input, response=result.final_text, tier="writing")
+
+        # ══════════════════════════════════════════════════════════
         # MODEL MANAGEMENT
         # ══════════════════════════════════════════════════════════
 
@@ -643,6 +777,81 @@ def main():
         # STATUS
         # ══════════════════════════════════════════════════════════
 
+        elif cmd == "/speed":
+            print(speed.optimization_report())
+            cs = speed.cache.stats()
+            print(f"\nCache: {cs['entries']} responses cached | {cs['hits']} hits | {cs['hit_rate']} hit rate")
+
+        # ══════════════════════════════════════════════════════════
+        # FINE-TUNING COMMANDS
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/finetune") or cmd.startswith("/ft"):
+            subcmd = user_input.split(None, 1)[1] if " " in user_input else "status"
+
+            if subcmd == "status" or subcmd == "check":
+                print(ft_runner.check_readiness())
+
+            elif subcmd == "collect":
+                # Import from session store + training exports
+                n1 = ft_pipeline.add_from_session_store(sessions)
+                n2 = ft_pipeline.add_from_training_exports()
+                ft_pipeline.save()
+                print(f"Collected {n1} from sessions + {n2} from exports = {ft_pipeline.count} total")
+
+            elif subcmd.startswith("train"):
+                adapter_name = subcmd.replace("train", "").strip() or "default"
+                print(f"[FineTune] Starting training for adapter '{adapter_name}'...")
+                # First collect latest data
+                ft_pipeline.add_from_session_store(sessions)
+                ft_pipeline.add_from_training_exports()
+                ft_pipeline.save()
+                run = ft_runner.train(TrainingConfig(adapter_name=adapter_name))
+                print(f"\n{run.summary()}")
+
+            elif subcmd == "history":
+                print(ft_runner.list_runs())
+
+            elif subcmd == "adapters":
+                print(ft_adapters.list_adapters())
+
+            elif subcmd.startswith("create"):
+                name = subcmd.replace("create", "").strip()
+                if not name:
+                    print("Usage: /finetune create <adapter_name>")
+                else:
+                    ft_adapters.create(name)
+                    print(f"Created adapter '{name}'")
+
+            elif subcmd.startswith("activate"):
+                name = subcmd.replace("activate", "").strip()
+                if ft_adapters.set_active(name):
+                    print(f"Activated adapter '{name}'")
+                else:
+                    print(f"Adapter '{name}' not found")
+
+            elif subcmd == "deactivate":
+                ft_adapters.deactivate()
+                print("Adapter deactivated — using base model")
+
+            elif subcmd == "schedule":
+                ft_runner.start_nightly_schedule(hour=2)
+
+            elif subcmd == "export":
+                path = ft_pipeline.export_sharegpt()
+                print(f"Exported to {path}")
+
+            else:
+                print("Fine-tuning commands:")
+                print("  /finetune status     Check readiness")
+                print("  /finetune collect    Collect training data from sessions")
+                print("  /finetune train      Start training")
+                print("  /finetune history    Show training runs")
+                print("  /finetune adapters   List adapters")
+                print("  /finetune activate X Use an adapter")
+                print("  /finetune export     Export data for external training")
+                print("  /finetune schedule   Enable nightly auto-training")
+
         elif cmd == "/status":
             print(f"═══ LeanAI v7 Full Status ═══")
             print(f"Model     : {current_model_key} ({getattr(engine, 'model_name', 'unknown')})")
@@ -675,6 +884,17 @@ def main():
 
         else:
             start = time.time()
+
+            # Speed: Check response cache first
+            cached = speed.should_use_cache(user_input)
+            if cached:
+                text, confidence = cached
+                elapsed = time.time() - start
+                print(f"\nLeanAI (cached):\n{text}")
+                print("───────────────────────────────────────────────────────")
+                print(f"Confidence  {confidence:.0f}%  | ⚡ CACHED — instant")
+                sessions.add_exchange(query=user_input, response=text, tier="cache", confidence=confidence)
+                continue
 
             # Phase 6b: Liquid router decides tier
             tier_suggestion = liquid_router.route(user_input)
@@ -735,7 +955,9 @@ def main():
 
             # Generate response
             try:
-                resp = engine.generate(user_input, config=GenerationConfig())
+                # Speed: Use optimal max_tokens for this query
+                smart_tokens = speed.get_max_tokens(user_input)
+                resp = engine.generate(user_input, config=GenerationConfig(max_tokens=smart_tokens))
             except Exception as e:
                 print(f"\nError: {e}")
                 continue
@@ -808,6 +1030,18 @@ def main():
                 query=user_input, response=text,
                 tier=tier, confidence=confidence,
                 code_generated=code_exec,
+            )
+
+            # Speed: Cache this response for future
+            speed.cache_response(user_input, text, confidence)
+
+            # Continuous fine-tuning: collect high-quality pairs
+            ft_pipeline.add_example(
+                instruction=user_input,
+                response=text,
+                quality_score=confidence / 100 if confidence > 1 else confidence,
+                source=tier,
+                verified=code_exec and code_passed,
             )
 
 
