@@ -12,6 +12,7 @@ import re
 
 # ── Core engine ───────────────────────────────────────────────────
 from core.engine_v3 import LeanAIEngineV3 as LeanAIEngine, GenerationConfig
+from core.model_manager import ModelManager, classify_complexity
 from tools.executor import CodeExecutor
 from tools.indexer import ProjectIndexer
 from agents.build_command import BuildHandler
@@ -48,6 +49,10 @@ def main():
     engine = LeanAIEngine(verbose=False)
     executor = CodeExecutor()
     indexer = ProjectIndexer()
+
+    # ── Model Manager (multi-model switching) ─────────────────────
+    model_mgr = ModelManager()
+    current_model_key = "qwen-7b"  # track which model is loaded
 
     # ── Model function (shared by build, swarm, TDD) ──────────────
     def model_fn(system_prompt: str, user_prompt: str) -> str:
@@ -146,6 +151,7 @@ def main():
         pass
 
     print(f"Model    : not loaded (loads on first question)")
+    print(f"Models   : {', '.join(model_mgr.get_downloaded_models()) or 'qwen-7b'} | mode: {model_mgr.mode}")
     print(f"Memory   : {mem_count} episodes | {mem_backend} | HDC: {hdc.count} entries")
     print(f"Profile  : {profile_count} fields")
     print(f"Training : {training_total} pairs")
@@ -230,6 +236,10 @@ def main():
 ║  /search <query>   Search past conversations           ║
 ║                                                        ║
 ║ SYSTEM                                                 ║
+║  /model             List/switch/download models        ║
+║  /model auto        Auto-switch (7B fast, 32B complex) ║
+║  /model quality     Always use best model              ║
+║  /model download X  Download a model                   ║
 ║  /status           Full system status                  ║
 ║  /index <path>     Index for semantic search           ║
 ║  /ask <question>   Search indexed codebase             ║
@@ -567,12 +577,79 @@ def main():
                 print(f"Error: {e}")
 
         # ══════════════════════════════════════════════════════════
+        # MODEL MANAGEMENT
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/model"):
+            subcmd = user_input[6:].strip().lower()
+
+            if not subcmd or subcmd == "list":
+                print(model_mgr.list_models())
+
+            elif subcmd == "auto":
+                model_mgr.set_mode("auto")
+                print("Mode set to AUTO — 7B for simple queries, 32B for complex ones.")
+
+            elif subcmd == "fast":
+                model_mgr.set_mode("fast")
+                print("Mode set to FAST — always use smallest model.")
+
+            elif subcmd == "quality":
+                model_mgr.set_mode("quality")
+                print("Mode set to QUALITY — always use best model.")
+
+            elif subcmd.startswith("download"):
+                target = subcmd.replace("download", "").strip()
+                if not target:
+                    print("Usage: /model download qwen-32b")
+                    print(f"Available: {list(model_mgr.models.keys())}")
+                    continue
+                print(f"Downloading {target}... (this takes a while)")
+                success, msg = model_mgr.download(target)
+                print(msg)
+
+            elif subcmd in model_mgr.models:
+                # Switch to a specific model
+                model_key = subcmd
+                model_info = model_mgr.get_model_info(model_key)
+                model_path = model_mgr.get_model_path(model_key)
+                if not model_path:
+                    print(f"Model {model_key} not downloaded. Run: /model download {model_key}")
+                    continue
+                print(f"Switching to {model_info.name}...")
+                try:
+                    # Unload current model
+                    engine._model = None
+                    import gc; gc.collect()
+                    # Load new model
+                    engine.model_name = model_info.filename
+                    engine.model_path = model_path
+                    engine._load_model()
+                    current_model_key = model_key
+                    print(f"Loaded {model_info.name} ({model_info.speed_label}, quality: {model_info.quality_score}%)")
+                except Exception as e:
+                    print(f"Error loading model: {e}")
+
+            else:
+                print("Model commands:")
+                print("  /model              List available models")
+                print("  /model auto         Auto-switch by query complexity")
+                print("  /model fast         Always use fastest model")
+                print("  /model quality      Always use best model")
+                print("  /model qwen-32b     Switch to specific model")
+                print("  /model download X   Download a model")
+
+        # ══════════════════════════════════════════════════════════
         # STATUS
         # ══════════════════════════════════════════════════════════
 
         elif cmd == "/status":
             print(f"═══ LeanAI v7 Full Status ═══")
-            print(f"Model     : {getattr(engine, 'model_name', 'unknown')}")
+            print(f"Model     : {current_model_key} ({getattr(engine, 'model_name', 'unknown')})")
+            print(f"Mode      : {model_mgr.mode}")
+            mm_stats = model_mgr.stats()
+            print(f"Models    : {', '.join(mm_stats['downloaded_models'])} downloaded")
+            print(f"Routing   : {mm_stats['fast_count']} fast / {mm_stats['quality_count']} quality")
             print(f"Format    : {getattr(engine, 'prompt_format', 'unknown')}")
             print(f"Threads   : {getattr(engine, 'n_threads', '?')}")
             print(f"Memory    : {mem_count} episodes | {mem_backend}")
@@ -601,6 +678,45 @@ def main():
 
             # Phase 6b: Liquid router decides tier
             tier_suggestion = liquid_router.route(user_input)
+
+            # Auto model selection: switch if needed
+            downloaded = model_mgr.get_downloaded_models()
+            if model_mgr.mode == "auto" and len(downloaded) >= 1:
+                best_model = model_mgr.select_model(user_input)
+                if best_model != current_model_key and best_model in downloaded:
+                    best_info = model_mgr.get_model_info(best_model)
+                    best_path = model_mgr.get_model_path(best_model)
+                    if best_path:
+                        complexity = classify_complexity(user_input)
+                        print(f"  [Auto] {complexity} query → switching to {best_info.name}...", flush=True)
+                        try:
+                            engine._model = None
+                            import gc; gc.collect()
+                            engine.model_name = best_info.filename
+                            engine.model_path = best_path
+                            engine._load_model()
+                            current_model_key = best_model
+                        except Exception:
+                            pass  # stay on current model
+                elif best_model == current_model_key:
+                    pass  # already on the right model
+                elif best_model not in downloaded and current_model_key not in downloaded:
+                    # Need to load any available model
+                    if downloaded:
+                        fallback = downloaded[0]
+                        fb_info = model_mgr.get_model_info(fallback)
+                        fb_path = model_mgr.get_model_path(fallback)
+                        if fb_path and fallback != current_model_key:
+                            print(f"  [Auto] Loading {fb_info.name}...", flush=True)
+                            try:
+                                engine._model = None
+                                import gc; gc.collect()
+                                engine.model_name = fb_info.filename
+                                engine.model_path = fb_path
+                                engine._load_model()
+                                current_model_key = fallback
+                            except Exception:
+                                pass
 
             # Phase 7e: Add session context for continuity
             session_ctx = ""
