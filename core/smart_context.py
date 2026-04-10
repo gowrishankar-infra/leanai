@@ -34,7 +34,7 @@ class SmartContext:
         git_intel=None,
         session_store=None,
         hdc=None,
-        max_context_chars: int = 2000,
+        max_context_chars: int = 4000,
     ):
         self.brain = brain
         self.git = git_intel
@@ -90,8 +90,9 @@ class SmartContext:
             ctx_parts = []
             query_lower = query.lower()
 
-            # Find mentioned files and inject their actual description
+            # Find mentioned files and inject their actual description + content
             matched_file = False
+            matched_path = None
             for rel_path in list(self.brain._file_analyses.keys())[:200]:
                 fname = os.path.basename(rel_path).lower().replace(".py", "")
                 # Match filename without extension in query
@@ -100,6 +101,7 @@ class SmartContext:
                     if desc and "not indexed" not in desc.lower():
                         ctx_parts.append(f"[File: {rel_path}]\n{desc[:600]}")
                         matched_file = True
+                        matched_path = rel_path
                         break
 
             # If no specific file matched, try partial matches
@@ -113,9 +115,21 @@ class SmartContext:
                             if desc and "not indexed" not in desc.lower():
                                 ctx_parts.append(f"[File: {rel_path}]\n{desc[:600]}")
                                 matched_file = True
+                                matched_path = rel_path
                                 break
                     if matched_file:
                         break
+
+            # If a file was matched, also include actual file content snippet
+            if matched_path and self.brain.config and self.brain.config.project_path:
+                try:
+                    full_path = os.path.join(self.brain.config.project_path, matched_path)
+                    if os.path.exists(full_path):
+                        with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                            content = f.read(3000)  # first 3000 chars
+                        ctx_parts.append(f"[Source code of {matched_path}]\n```\n{content}\n```")
+                except Exception:
+                    pass  # file read failed, continue without content
 
             # Find mentioned functions with details
             for func_name in list(self.brain.graph._function_lookup.keys())[:300]:

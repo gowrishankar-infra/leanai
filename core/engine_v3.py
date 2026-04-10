@@ -58,12 +58,36 @@ class LeanAIResponse:
 
 
 def _get_active_model_path() -> str:
+    """Find the active model. Checks config file first, then scans for any downloaded model."""
     config_file = Path.home() / ".leanai" / "active_model.txt"
     if config_file.exists():
         path = config_file.read_text().strip()
         if Path(path).exists():
             return path
-    return str(Path.home() / ".leanai" / "models" / "phi3-mini-q4.gguf")
+
+    # Auto-detect: scan models directory for any .gguf file
+    models_dir = Path.home() / ".leanai" / "models"
+    if models_dir.exists():
+        # Prefer qwen models, then any .gguf
+        for pattern in ["qwen*7b*.gguf", "qwen*.gguf", "*.gguf"]:
+            found = list(models_dir.glob(pattern))
+            if found:
+                # Pick the smallest (fastest) model as default
+                found.sort(key=lambda p: p.stat().st_size)
+                return str(found[0])
+
+    # Fallback — will trigger "model not found" message
+    return str(models_dir / "qwen25-coder-7b-q4.gguf")
+
+
+def _save_active_model(model_path: str):
+    """Save the active model path so it persists across restarts."""
+    try:
+        config_file = Path.home() / ".leanai" / "active_model.txt"
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(model_path)
+    except Exception:
+        pass  # non-critical
 
 
 def _detect_prompt_format(model_path: str) -> str:
@@ -500,6 +524,9 @@ class LeanAIEngineV3:
         self.model_name = Path(new_model_path).name
         self.prompt_format = _detect_prompt_format(new_model_path)
         self.n_threads = _optimal_threads(new_model_path)
+
+        # Save as active model so it persists across restarts
+        _save_active_model(new_model_path)
 
         # Load new model immediately
         self._load_model()

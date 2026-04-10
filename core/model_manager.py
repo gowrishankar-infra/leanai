@@ -318,11 +318,14 @@ class ModelManager:
             os.unlink(script.name)
 
             if model.is_downloaded:
+                # Save as active model
+                self._save_active(model.full_path)
                 return True, f"Downloaded {model.name} successfully!"
             else:
                 # Check alternate locations
                 alt_path = os.path.join(models_dir, model.filename)
                 if os.path.exists(alt_path):
+                    self._save_active(alt_path)
                     return True, f"Downloaded {model.name} successfully!"
                 return False, f"Download may have failed. Check {models_dir} manually."
 
@@ -330,6 +333,15 @@ class ModelManager:
             return False, "Download timed out. Try downloading manually."
         except Exception as e:
             return False, f"Download error: {e}"
+
+    def _save_active(self, path):
+        """Save active model path so it persists across restarts."""
+        try:
+            config = Path.home() / ".leanai" / "active_model.txt"
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(str(path))
+        except Exception:
+            pass
 
     def download_command(self, model_key: str) -> str:
         """Get the manual download command for a model."""

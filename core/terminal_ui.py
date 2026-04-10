@@ -193,86 +193,8 @@ def format_response(text):
 
 
 def highlight_code_line(line, lang=""):
-    """Apply syntax highlighting to a code line."""
-    if not line.strip():
-        return line
-
-    # Comments are safe for all languages
-    if re.match(r"^\s*#", line) or re.match(r"^\s*//", line):
-        return f"{C.fg(242)}{line}{C.RESET}"
-
-    # For non-Python languages, only highlight comments and strings
-    # (full regex highlighting corrupts ANSI codes across languages)
-    py_langs = ["python", "py", ""]
-    if lang.lower() not in py_langs:
-        highlighted = line
-        # Strings only (safe, doesn't conflict)
-        highlighted = re.sub(r'("(?:[^"\\]|\\.)*")', f"{C.fg(114)}\\1{C.RESET}", highlighted)
-        highlighted = re.sub(r"('(?:[^'\\]|\\.)*')", f"{C.fg(114)}\\1{C.RESET}", highlighted)
-        # Keywords for the specific language
-        if lang.lower() in ["go", "golang"]:
-            kw = r"\b(func|package|import|return|if|else|for|range|var|const|type|struct|interface|defer|go|select|case|switch|chan|map|make|append|len|cap|nil|true|false|err)\b"
-        elif lang.lower() in ["javascript", "js", "typescript", "ts"]:
-            kw = r"\b(function|const|let|var|return|if|else|for|while|class|new|this|async|await|import|export|from|try|catch|throw|null|undefined|true|false)\b"
-        elif lang.lower() in ["java", "kotlin"]:
-            kw = r"\b(public|private|protected|class|interface|extends|implements|return|if|else|for|while|new|this|super|static|final|void|int|String|boolean|null|true|false|throws|try|catch)\b"
-        elif lang.lower() in ["rust", "rs"]:
-            kw = r"\b(fn|let|mut|pub|use|mod|impl|trait|struct|enum|match|if|else|for|while|loop|return|self|Self|true|false|None|Some|Ok|Err|unsafe|async|await|where)\b"
-        elif lang.lower() in ["c", "cpp", "c++"]:
-            kw = r"\b(int|char|float|double|void|return|if|else|for|while|do|switch|case|break|continue|struct|typedef|include|define|NULL|true|false|class|public|private|protected|virtual|new|delete|const|static|extern)\b"
-        elif lang.lower() in ["sql"]:
-            kw = r"\b(SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|JOIN|LEFT|RIGHT|INNER|ON|AND|OR|NOT|IN|NULL|IS|AS|ORDER|BY|GROUP|HAVING|LIMIT|INTO|VALUES|SET|TABLE|INDEX)\b"
-        else:
-            kw = r"\b(def|class|import|return|if|else|for|while|func|function|var|const|let|type|struct|new|this|null|nil|true|false)\b"
-        highlighted = re.sub(kw, f"{C.fg(141)}\\1{C.RESET}", highlighted)
-        # Numbers
-        highlighted = re.sub(r"\b(\d+\.?\d*)\b", f"{C.fg(222)}\\1{C.RESET}", highlighted)
-        return highlighted
-
-    # Full Python highlighting
-    highlighted = line
-
-    # Keywords (purple)
-    keywords = (
-        r"\b(def|class|import|from|return|if|elif|else|for|while|try|except|"
-        r"finally|with|as|yield|async|await|raise|pass|break|continue|lambda|"
-        r"and|or|not|in|is)\b"
-    )
-    highlighted = re.sub(keywords, f"{C.fg(141)}\\1{C.RESET}", highlighted)
-
-    # Builtins (cyan)
-    builtins = (
-        r"\b(print|len|range|str|int|float|list|dict|set|type|isinstance|"
-        r"hasattr|getattr|open|super|enumerate|zip|map|filter|sorted|"
-        r"True|False|None|self)\b"
-    )
-    highlighted = re.sub(builtins, f"{C.fg(81)}\\1{C.RESET}", highlighted)
-
-    # Strings (green)
-    highlighted = re.sub(r'("(?:[^"\\]|\\.)*")', f"{C.fg(114)}\\1{C.RESET}", highlighted)
-    highlighted = re.sub(r"('(?:[^'\\]|\\.)*')", f"{C.fg(114)}\\1{C.RESET}", highlighted)
-
-    # Numbers (gold)
-    highlighted = re.sub(r"\b(\d+\.?\d*)\b", f"{C.fg(222)}\\1{C.RESET}", highlighted)
-
-    # Function definitions (bold blue name)
-    highlighted = re.sub(
-        r"(def\s+)(\w+)",
-        f"{C.fg(141)}\\1{C.RESET}{C.fg(75)}{C.BOLD}\\2{C.RESET}",
-        highlighted,
-    )
-
-    # Class definitions (bold gold name)
-    highlighted = re.sub(
-        r"(class\s+)(\w+)",
-        f"{C.fg(141)}\\1{C.RESET}{C.fg(222)}{C.BOLD}\\2{C.RESET}",
-        highlighted,
-    )
-
-    # Decorators (coral)
-    highlighted = re.sub(r"^(\s*@\w+)", f"{C.fg(210)}\\1{C.RESET}", highlighted)
-
-    return highlighted
+    """Return code line as-is. Clean code is better than corrupted colors."""
+    return line
 
 
 def format_markdown_line(line):
@@ -303,10 +225,10 @@ def format_markdown_line(line):
         return f"    {C.fg(222)}▐{C.RESET} {C.ITALIC}{C.fg(250)}{stripped[2:]}{C.RESET}"
 
     # Bold
-    line = re.sub(r"\*\*(.+?)\*\*", f"{C.BOLD}{BRIGHT}\\1{C.RESET}", line)
+    line = re.sub(r"\*\*(.+?)\*\*", lambda m: C.BOLD + BRIGHT + m.group(1) + C.RESET, line)
 
     # Inline code
-    line = re.sub(r"`([^`]+)`", f"{C.fg(81)}{C.bg(236)} \\1 {C.RESET}", line)
+    line = re.sub(r"`([^`]+)`", lambda m: C.fg(81) + C.bg(236) + " " + m.group(1) + " " + C.RESET, line)
 
     return line
 
