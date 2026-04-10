@@ -50,6 +50,7 @@ from core.completer import AutoCompleter
 from core.reasoning_engine import ReasoningEngine
 from core.writing_engine import WritingEngine
 from core.speed_optimizer import SpeedOptimizer
+from core.speed_optimizer import get_max_tokens_for_query
 from brain.semantic_bisect import SemanticGitBisect
 from brain.evolution_tracker import EvolutionTracker
 from tools.adversarial import AdversarialVerifier
@@ -59,7 +60,7 @@ from tools.adversarial import AdversarialVerifier
 
 class ChatRequest(BaseModel):
     message: str
-    max_tokens: int = 512
+    max_tokens: int = 0  # 0 = auto (smart max_tokens based on query type)
     temperature: float = 0.1
 
 class ChatResponse(BaseModel):
@@ -260,8 +261,10 @@ async def chat(req: ChatRequest):
     """Send a message to LeanAI."""
     try:
         start = time.time()
+        # Smart max_tokens: auto-detect based on query type if not specified
+        tokens = req.max_tokens if req.max_tokens > 0 else get_max_tokens_for_query(req.message)
         config = GenerationConfig(
-            max_tokens=req.max_tokens,
+            max_tokens=tokens,
             temperature=req.temperature,
         )
         resp = engine.generate(req.message, config=config)

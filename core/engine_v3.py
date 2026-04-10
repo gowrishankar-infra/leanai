@@ -487,7 +487,7 @@ class LeanAIEngineV3:
             print(f"[LeanAI v3] Loading {model_name} ({self.n_threads} threads)...")
             self._model = Llama(
                 model_path=self.model_path,
-                n_ctx=2048, n_threads=self.n_threads, n_batch=1024,
+                n_ctx=4096, n_threads=self.n_threads, n_batch=1024,
                 n_gpu_layers=0, use_mmap=True, use_mlock=False,
                 logits_all=False, verbose=self.verbose,
             )
