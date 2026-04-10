@@ -450,6 +450,8 @@ leanai/
 
 ## All Commands
 
+> **📖 For detailed explanations, examples, and workflows, see [COMMANDS.md](COMMANDS.md)**
+
 | Category | Commands |
 |----------|----------|
 | Chat | `(just type)`, `/swarm <q>`, `/run <code>` |
