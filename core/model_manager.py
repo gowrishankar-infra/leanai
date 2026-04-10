@@ -131,7 +131,13 @@ COMPLEX_INDICATORS = {
     "system design", "trade-off", "pattern",
     # Multi-step reasoning
     "step by step", "explain in detail", "comprehensive", "thorough",
-    "analyze", "compare", "evaluate", "optimize",
+    "analyze", "compare", "evaluate", "optimize", "explain this",
+    "explain the", "break down", "walk through", "how does this work",
+    # DevOps & CI/CD (needs deep knowledge)
+    "pipeline", "ci/cd", "cicd", "devops", "azure devops", "github actions",
+    "jenkins", "gitlab ci", "kubernetes", "k8s", "docker compose",
+    "terraform", "ansible", "helm", "deployment", "infrastructure",
+    "yaml", "dockerfile", "nginx", "load balancer",
     # Complex code tasks
     "refactor", "redesign", "implement from scratch", "build a complete",
     "multi-file", "full application", "production-ready",
@@ -148,8 +154,10 @@ COMPLEX_INDICATORS = {
     "security vulnerability",
     # Architecture patterns
     "decorator", "singleton", "factory", "observer", "strategy",
-    "middleware", "pipeline", "event driven", "pub sub",
+    "middleware", "event driven", "pub sub",
     "message queue", "websocket",
+    # Review & explain
+    "review this", "what's wrong", "improve this", "best practice",
 }
 
 SIMPLE_INDICATORS = {

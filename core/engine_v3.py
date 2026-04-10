@@ -571,7 +571,21 @@ class LeanAIEngineV3:
             "Never leak HTML or formatting artifacts into code.\n"
             "10. If the question is about the USER'S project (context below), give answers "
             "about THEIR actual code with real class names and file paths — never generic examples.\n"
-            "11. Stop after answering. No follow-up questions unless genuinely needed."
+            "11. SELF-REVIEW — Before finishing your response, mentally verify:\n"
+            "   For CI/CD pipelines and DevOps configs:\n"
+            "   [ ] Did I show an improved version with concrete fixes applied?\n"
+            "   [ ] Did I warn about tag strategy (latest vs build IDs/semantic versions)?\n"
+            "   [ ] Did I mention whether a Dockerfile is assumed/required?\n"
+            "   [ ] Did I flag if there's no test/validation step before deploy?\n"
+            "   [ ] Did I mention authentication/credentials/service connections?\n"
+            "   For code explanations:\n"
+            "   [ ] Did I show an improved version with my fixes applied?\n"
+            "   [ ] Did I flag missing input validation?\n"
+            "   [ ] Did I flag missing error handling?\n"
+            "   [ ] Did I mention edge cases (None, empty, negative, large)?\n"
+            "   [ ] Did I mention security risks if applicable?\n"
+            "   If any box is unchecked AND relevant, add it before finishing.\n"
+            "12. Stop after answering. No follow-up questions unless genuinely needed."
         )
 
         # Inject project context (from smart context — brain, git, sessions)
