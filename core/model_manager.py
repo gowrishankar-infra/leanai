@@ -129,15 +129,24 @@ COMPLEX_INDICATORS = {
     # Architecture & design
     "architect", "design", "microservice", "distributed", "scalable",
     "system design", "trade-off", "pattern",
-    # Multi-step reasoning
+    # Multi-step reasoning & explanation
     "step by step", "explain in detail", "comprehensive", "thorough",
     "analyze", "compare", "evaluate", "optimize", "explain this",
     "explain the", "break down", "walk through", "how does this work",
-    # DevOps & CI/CD (needs deep knowledge)
+    "explain", "review", "audit", "critique",
+    # DevOps & CI/CD
     "pipeline", "ci/cd", "cicd", "devops", "azure devops", "github actions",
     "jenkins", "gitlab ci", "kubernetes", "k8s", "docker compose",
     "terraform", "ansible", "helm", "deployment", "infrastructure",
     "yaml", "dockerfile", "nginx", "load balancer",
+    # API & Backend
+    "rest api", "graphql", "endpoint", "middleware", "authentication",
+    "authorization", "oauth", "jwt", "cors", "rate limit",
+    "api gateway", "reverse proxy", "grpc",
+    # Database
+    "sql injection", "orm", "migration", "transaction", "index",
+    "connection pool", "query optimization", "normalization",
+    "nosql", "redis", "mongodb", "postgres", "mysql",
     # Complex code tasks
     "refactor", "redesign", "implement from scratch", "build a complete",
     "multi-file", "full application", "production-ready",
@@ -147,17 +156,24 @@ COMPLEX_INDICATORS = {
     # Complex data structures
     "lru", "cache", "ttl", "expiration", "thread-safe", "thread safe",
     "lock-free", "lockfree", "atomic",
-    "rate limiter", "rate limit", "circuit breaker",
-    "load balancer", "connection pool",
+    "rate limiter", "circuit breaker",
     # Debugging complex issues
     "race condition", "memory leak", "deadlock", "performance issue",
-    "security vulnerability",
+    "security vulnerability", "buffer overflow", "stack overflow",
     # Architecture patterns
     "decorator", "singleton", "factory", "observer", "strategy",
-    "middleware", "event driven", "pub sub",
-    "message queue", "websocket",
-    # Review & explain
-    "review this", "what's wrong", "improve this", "best practice",
+    "event driven", "pub sub", "message queue", "websocket",
+    # Review & improve (any language)
+    "review this", "what's wrong", "what is wrong", "improve this", "best practice",
+    "what's missing", "security review", "code review",
+    "fix this", "debug this", "why is this", "why does this",
+    # Language-specific complex topics
+    "pointer", "reference", "ownership", "borrow", "lifetime",  # Rust/C++
+    "goroutine", "channel", "defer", "interface",                # Go
+    "promise", "callback", "closure", "prototype",               # JavaScript
+    "generic", "trait", "enum", "macro",                         # Rust/Java
+    "spring boot", "django", "flask", "express", "fastapi",      # Frameworks
+    "react", "vue", "angular", "next.js", "svelte",              # Frontend
 }
 
 SIMPLE_INDICATORS = {
@@ -169,7 +185,7 @@ SIMPLE_INDICATORS = {
     # Memory/personal
     "my name", "remember", "you know",
     # Quick tasks
-    "fix this", "syntax", "typo", "rename",
+    "syntax", "typo", "rename",
 }
 
 
@@ -185,6 +201,10 @@ def classify_complexity(query: str) -> str:
     complex_matches = sum(1 for ind in COMPLEX_INDICATORS if ind in lower)
     simple_matches = sum(1 for ind in SIMPLE_INDICATORS if ind in lower)
 
+    # Complex always wins over simple (e.g. "what is wrong" has both "what is" and "what is wrong")
+    if complex_matches >= 1:
+        return "complex"
+
     # Short queries are usually simple
     if word_count <= 5 and complex_matches == 0:
         return "simple"
@@ -193,11 +213,7 @@ def classify_complexity(query: str) -> str:
     if lower.count("\n") > 5 or word_count > 50:
         return "complex"
 
-    if complex_matches >= 2:
-        return "complex"
-    elif complex_matches == 1 and word_count > 15:
-        return "complex"
-    elif simple_matches >= 1:
+    if simple_matches >= 1:
         return "simple"
     elif word_count > 20:
         return "medium"
