@@ -42,19 +42,20 @@ from brain.session_store import SessionStore
 from training.finetune_pipeline import TrainingDataPipeline
 from training.adapter_manager import AdapterManager
 from training.finetune_runner import FineTuneRunner, TrainingConfig
+from core.terminal_ui import (
+    print_banner, print_status, print_commands, get_prompt,
+    format_response, format_confidence, format_meta, separator,
+    format_code_result, format_brain_scan, format_completions,
+    print_response_header, C,
+)
 
 
-BANNER = """
-╔══════════════════════════════════════════════════════════╗
-║                     LeanAI  v7  FULL                     ║
-║   All systems integrated — Project-Aware AI Intelligence ║
-║   Brain · Git · TDD · Editor · Sessions · Swarm · HDC    ║
-╚══════════════════════════════════════════════════════════╝"""
+BANNER = ""  # handled by terminal_ui
 
 
 def main():
-    print(BANNER)
-    print("Initializing LeanAI (full integration)...")
+    print_banner()
+    print(f"  {C.DIM}Initializing LeanAI (full integration)...{C.RESET}")
 
     # ══════════════════════════════════════════════════════════════
     # INITIALIZATION — all components
@@ -205,28 +206,19 @@ def main():
     except Exception:
         pass
 
-    print(f"Model    : not loaded (loads on first question)")
-    print(f"Models   : {', '.join(model_mgr.get_downloaded_models()) or 'qwen-7b'} | mode: {model_mgr.mode}")
-    print(f"Memory   : {mem_count} episodes | {mem_backend} | HDC: {hdc.count} entries")
-    print(f"Profile  : {profile_count} fields")
-    print(f"Training : {training_total} pairs")
-    print(f"Sessions : {sessions.total_sessions} past | {sessions.total_exchanges} exchanges")
-    print(f"Git      : {'active' if git_intel.is_available else 'not a repo'} | branch: {git_intel.current_branch()}")
-    print(f"Router   : liquid adaptive (learns from every query)")
-    active_adapter = ft_adapters.get_active()
-    print(f"FineTune : {ft_pipeline.count} training pairs | adapter: {active_adapter.name if active_adapter else 'none'}")
-    print(f"")
-    print(f"Commands:")
-    print(f"  Chat:     just type | /swarm <q>  | /run <code>")
-    print(f"  Build:    /build <task> | /tdd <tests> | /tdd-desc <description>")
-    print(f"  Reason:   /reason <q> | /plan <task> | /decompose <problem>")
-    print(f"  Write:    /write <doc> | /essay <topic> | /report <topic>")
-    print(f"  Project:  /brain <path> | /describe <file> | /deps <file> | /impact <file>")
-    print(f"  Git:      /git activity | /git hotspots | /git history <file> | /git changelog")
-    print(f"  Refactor: /refs <symbol> | /rename <old> <new>")
-    print(f"  Memory:   /remember <fact> | /profile | /sessions | /continue")
-    print(f"  FineTune: /finetune status | /finetune train | /finetune adapters")
-    print(f"  System:   /model <cmd> | /speed | /status | /help | /quit")
+    print_status(
+        model_name="not loaded (loads on first question)",
+        model_mode=model_mgr.mode,
+        memory_count=mem_count,
+        mem_backend=f"{mem_backend} | HDC: {hdc.count}",
+        profile_count=profile_count,
+        training_pairs=training_total,
+        session_count=sessions.total_sessions,
+        exchange_count=sessions.total_exchanges,
+        git_branch=git_intel.current_branch() if git_intel.is_available else "not a repo",
+        finetune_pairs=ft_pipeline.count,
+    )
+    print_commands()
 
     # ══════════════════════════════════════════════════════════════
     # COMMAND LOOP
@@ -234,9 +226,9 @@ def main():
 
     while True:
         try:
-            user_input = input("\nYou: ").strip()
+            user_input = input(get_prompt()).strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye!")
+            print(f"\n  {C.DIM}Goodbye!{C.RESET}")
             sessions.end_session(current_session.id)
             sessions.save_all()
             break
@@ -1021,7 +1013,7 @@ def main():
                 print("───────────────────────────────────────────────────────")
                 print(f"Confidence  {confidence:.0f}%  | ⚡ CACHED — instant")
                 sessions.add_exchange(query=user_input, response=text, tier="cache", confidence=confidence)
-                evolution.track_query(user_input, session_id=str(current_session.session_id))
+                evolution.track_query(user_input, session_id=str(current_session.id))
                 continue
 
             # Predictive: Check if we pre-generated this answer
@@ -1033,7 +1025,7 @@ def main():
                 print("───────────────────────────────────────────────────────")
                 print(f"Confidence  {confidence*100:.0f}%  | 🔮 PREDICTED — pre-generated")
                 sessions.add_exchange(query=user_input, response=text, tier="predicted", confidence=confidence*100)
-                evolution.track_query(user_input, session_id=str(current_session.session_id))
+                evolution.track_query(user_input, session_id=str(current_session.id))
                 continue
 
             # Phase 6b: Liquid router decides tier
@@ -1146,33 +1138,23 @@ def main():
             code_passed = getattr(resp, "code_passed", False)
             code_output = getattr(resp, "code_output", "")
 
-            # Print response
-            print(f"\nLeanAI:\n{text}")
+            # Print response with formatting
+            print_response_header()
+            print(format_response(text))
 
             # Code execution results
             if code_exec:
                 if code_passed:
-                    print(f"\n--- Code: PASSED ---")
-                    if code_output:
-                        # Show clean output, max 10 lines
-                        lines = [l for l in code_output.strip().split("\n") if l.strip()][:10]
-                        if lines:
-                            print("\n".join(lines))
+                    output_lines = [l for l in code_output.strip().split("\n") if l.strip()][:10] if code_output else []
+                    format_code_result(True, output="\n".join(output_lines))
                 else:
-                    # Show error concisely — just the error type + message
+                    error_msg = ""
                     if code_output:
-                        error_lines = code_output.strip().split("\n")
-                        error_msg = ""
-                        for line in reversed(error_lines):
+                        for line in reversed(code_output.strip().split("\n")):
                             if line.strip() and not line.startswith(" "):
                                 error_msg = line.strip()
                                 break
-                        if error_msg:
-                            print(f"\n--- Code: {error_msg[:120]} ---")
-                        else:
-                            print(f"\n--- Code: execution error ---")
-                    else:
-                        print(f"\n--- Code: execution error ---")
+                    format_code_result(False, error=error_msg or "execution error")
 
             # Confidence bar
             if code_exec and code_passed:
@@ -1180,8 +1162,6 @@ def main():
                 conf_label = "High"
             if not conf_label:
                 conf_label = "High" if confidence >= 90 else "Good" if confidence >= 70 else "Moderate" if confidence >= 50 else "Low"
-            conf_bars = int(confidence / 5)
-            conf_display = "█" * conf_bars + "░" * (20 - conf_bars)
 
             # Human-readable latency
             if latency_ms < 1000:
@@ -1193,21 +1173,10 @@ def main():
                 secs = int((latency_ms % 60000) // 1000)
                 latency_str = f"{mins}m {secs}s"
 
-            meta = f"Confidence  [{conf_display}] {confidence:.0f}%  {conf_label}"
-            meta += f"\nTier: {tier}  Latency: {latency_str}"
-            if from_mem:
-                meta += "  From memory: yes"
-            if verified:
-                meta += "  Verified: yes"
-            if mem_active:
-                meta += "  Memory: active"
-            if code_exec and code_passed:
-                meta += "  Code: verified"
-            if enriched_context:
-                meta += "  Context: enriched"
-
-            print("───────────────────────────────────────────────────────")
-            print(meta)
+            separator()
+            print(format_confidence(confidence, conf_label))
+            print(format_meta(tier, latency_str, from_mem, verified,
+                             mem_active, code_exec and code_passed, enriched_context))
 
             # Phase 6b: Feed back to liquid router (learns from every query)
             liquid_router.feedback(tier, confidence=confidence, latency_ms=latency_ms)
@@ -1238,7 +1207,7 @@ def main():
             )
 
             # Evolution: track themes across sessions
-            evolution.track_query(user_input, session_id=str(current_session.session_id))
+            evolution.track_query(user_input, session_id=str(current_session.id))
 
             # Predictor: predict follow-ups and start pre-generating
             if predictor.generate_fn:
