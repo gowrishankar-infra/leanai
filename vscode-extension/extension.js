@@ -6,7 +6,7 @@ const vscode = require('vscode');
 const http = require('http');
 const https = require('https');
 
-// ── API Client ───────────────────────────────────────────────────
+// ── API Client ───────────────────────────────────────────
 
 function getServerUrl() {
     return vscode.workspace.getConfiguration('leanai').get('serverUrl', 'http://127.0.0.1:8000');
@@ -53,7 +53,7 @@ function apiCall(endpoint, method, body) {
     });
 }
 
-// ── Output Channel ───────────────────────────────────────────────
+// ── Output Channel ───────────────────────────────────────
 
 let outputChannel;
 
@@ -67,13 +67,13 @@ function getOutput() {
 function showOutput(title, content) {
     const out = getOutput();
     out.clear();
-    out.appendLine(`═══ ${title} ═══`);
+    out.appendLine(`══ ${title} ══`);
     out.appendLine('');
     out.appendLine(content);
     out.show(true);
 }
 
-// ── Chat Panel (Webview) ─────────────────────────────────────────
+// ── Chat Panel (Webview) ─────────────────────────────────
 
 let chatPanel;
 
@@ -164,7 +164,7 @@ function openChatPanel(context) {
     chatPanel.onDidDispose(() => { chatPanel = null; });
 }
 
-// ── Commands ─────────────────────────────────────────────────────
+// ── Commands ─────────────────────────────────────────────
 
 async function chatCommand() {
     const question = await vscode.window.showInputBox({
@@ -178,7 +178,7 @@ async function chatCommand() {
         async () => {
             try {
                 const result = await apiCall('/chat', 'POST', { message: question });
-                showOutput('LeanAI Response', 
+                showOutput('LeanAI Response',
                     `Q: ${question}\n\n${result.text || result.error}\n\n` +
                     `Tier: ${result.tier} | Confidence: ${Math.round(result.confidence)}% | ${Math.round(result.latency_ms)}ms`
                 );
@@ -351,11 +351,10 @@ async function scanProject() {
 async function findRefs() {
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
-    // Get word under cursor
     const position = editor.selection.active;
     const wordRange = editor.document.getWordRangeAtPosition(position);
     const word = wordRange ? editor.document.getText(wordRange) : '';
-    
+
     const symbol = await vscode.window.showInputBox({
         prompt: 'Find all references to:',
         value: word,
@@ -388,7 +387,7 @@ async function gitHotspots() {
     }
 }
 
-// ── Status Bar ───────────────────────────────────────────────────
+// ── Status Bar ───────────────────────────────────────────
 
 let statusBarItem;
 
@@ -398,7 +397,7 @@ function createStatusBar() {
     statusBarItem.tooltip = 'LeanAI — Local AI Assistant';
     statusBarItem.command = 'leanai.showPanel';
     statusBarItem.show();
-    
+
     // Check server status
     apiCall('/status', 'GET').then(data => {
         if (data.model_loaded) {
@@ -414,10 +413,18 @@ function createStatusBar() {
     });
 }
 
-// ── Extension Lifecycle ──────────────────────────────────────────
+// ── Extension Lifecycle ──────────────────────────────────
 
 function activate(context) {
     console.log('LeanAI extension activated');
+
+    // Inline autocomplete (project-aware completions from brain index)
+    try {
+        const { registerInlineCompletion } = require('./inline-completion');
+        registerInlineCompletion(context);
+    } catch (e) {
+        console.log('[LeanAI] Inline completion not available:', e.message);
+    }
 
     // Register all commands
     context.subscriptions.push(

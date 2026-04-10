@@ -285,6 +285,8 @@ You: what is Python?     → instant ⚡ CACHED
 | 7B + 32B (recommended) | 32 GB | 25 GB | 25s simple, 90s complex |
 | With GPU | 32 GB + 4GB VRAM | 25 GB | 8-15s with offload |
 
+**Supported languages:** Python, JavaScript, TypeScript, Go, Rust, Java, C, C++, C#, Ruby, PHP, Swift, Kotlin, Scala, SQL, bash, PowerShell, Lua, R, Perl, Haskell, Elixir, Dart, YAML, JSON, Terraform, Docker, and 20+ more (powered by Qwen2.5 Coder).
+
 **Tested on:** Windows 11, i7-11800H, 32GB RAM, RTX 3050 Ti, Python 3.13
 
 ---

@@ -435,7 +435,9 @@ class LeanAIEngineV3:
     def _build_prompt(self, query, memory_context, history, project_context=""):
         system = (
             "You are LeanAI — an expert coding AI assistant. "
-            "You excel at Python, JavaScript, TypeScript, Go, Rust, SQL, bash. "
+            "You excel at Python, JavaScript, TypeScript, Go, Rust, Java, C, C++, "
+            "C#, Ruby, PHP, Swift, Kotlin, Scala, SQL, bash, PowerShell, Lua, R, "
+            "Perl, Haskell, Elixir, Dart, YAML, JSON, Terraform, Docker, and more. "
             "Provide clean, working, well-commented code. "
             "Stop after answering. No follow-up questions."
         )

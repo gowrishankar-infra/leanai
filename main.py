@@ -16,6 +16,7 @@ from core.model_manager import ModelManager, classify_complexity
 from core.reasoning_engine import ReasoningEngine
 from core.writing_engine import WritingEngine
 from core.speed_optimizer import SpeedOptimizer
+from core.completer import AutoCompleter
 from core.streaming import StreamingGenerator, StreamConfig, print_streaming_header, print_streaming_footer
 from core.smart_context import SmartContext
 from core.auto_recovery import AutoRecovery, RecoveryConfig
@@ -159,6 +160,9 @@ def main():
 
     # ── Smart Context (after sessions is created) ─────────────────
     smart_ctx = SmartContext(brain=None, git_intel=git_intel, session_store=sessions, hdc=hdc)
+
+    # ── Autocomplete ──────────────────────────────────────────────
+    completer = AutoCompleter(brain=None)  # updated after /brain scan
 
     # ══════════════════════════════════════════════════════════════
     # STARTUP DISPLAY
@@ -362,6 +366,7 @@ def main():
             editor = MultiFileEditor(path)  # update editor too
             git_intel = GitIntel(path)  # update git too
             smart_ctx = SmartContext(brain=brain, git_intel=git_intel, session_store=sessions, hdc=hdc)
+            completer.update_brain(brain)  # update autocomplete index
             print(f"[Brain] Scanned {result['files_found']} files in {result['scan_time_ms']}ms")
             print(brain.project_summary())
 
@@ -798,6 +803,27 @@ def main():
             cs = speed.cache.stats()
             print(f"\nCache: {cs['entries']} responses cached | {cs['hits']} hits | {cs['hit_rate']} hit rate")
 
+        elif cmd.startswith("/complete"):
+            prefix = user_input[9:].strip()
+            if not prefix:
+                print("Usage: /complete <prefix>")
+                print("  /complete gen          → functions starting with 'gen'")
+                print("  /complete Model        → classes starting with 'Model'")
+                print("  /complete engine.gen   → methods on engine")
+                continue
+            start_time = time.time()
+            results = completer.complete(prefix)
+            elapsed = (time.time() - start_time) * 1000
+            if results:
+                print(f"Completions for '{prefix}' ({elapsed:.1f}ms):")
+                for r in results:
+                    kind_icon = {"function": "ƒ", "class": "◆", "keyword": "⚡", "snippet": "✂"}.get(r.kind, "·")
+                    print(f"  {kind_icon} {r.label:<40} {r.detail}")
+            else:
+                print(f"No completions for '{prefix}'")
+            cs = completer.stats()
+            print(f"Index: {cs['functions_indexed']} functions, {cs['classes_indexed']} classes")
+
         # ══════════════════════════════════════════════════════════
         # FINE-TUNING COMMANDS
         # ══════════════════════════════════════════════════════════
@@ -1031,11 +1057,25 @@ def main():
                 if code_passed:
                     print(f"\n--- Code: PASSED ---")
                     if code_output:
-                        print(f"Output: {code_output[:500]}")
+                        # Show clean output, max 10 lines
+                        lines = [l for l in code_output.strip().split("\n") if l.strip()][:10]
+                        if lines:
+                            print("\n".join(lines))
                 else:
-                    print(f"\n--- Code: FAILED ---")
+                    # Show error concisely — just the error type + message
                     if code_output:
-                        print(f"Error: {code_output[:300]}")
+                        error_lines = code_output.strip().split("\n")
+                        error_msg = ""
+                        for line in reversed(error_lines):
+                            if line.strip() and not line.startswith(" "):
+                                error_msg = line.strip()
+                                break
+                        if error_msg:
+                            print(f"\n--- Code: {error_msg[:120]} ---")
+                        else:
+                            print(f"\n--- Code: execution error ---")
+                    else:
+                        print(f"\n--- Code: execution error ---")
 
             # Confidence bar
             if code_exec and code_passed:
@@ -1046,8 +1086,18 @@ def main():
             conf_bars = int(confidence / 5)
             conf_display = "█" * conf_bars + "░" * (20 - conf_bars)
 
+            # Human-readable latency
+            if latency_ms < 1000:
+                latency_str = f"{latency_ms:.0f}ms"
+            elif latency_ms < 60000:
+                latency_str = f"{latency_ms/1000:.1f}s"
+            else:
+                mins = int(latency_ms // 60000)
+                secs = int((latency_ms % 60000) // 1000)
+                latency_str = f"{mins}m {secs}s"
+
             meta = f"Confidence  [{conf_display}] {confidence:.0f}%  {conf_label}"
-            meta += f"\nTier: {tier}  Latency: {latency_ms:.0f}ms"
+            meta += f"\nTier: {tier}  Latency: {latency_str}"
             if from_mem:
                 meta += "  From memory: yes"
             if verified:
