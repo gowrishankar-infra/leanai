@@ -264,17 +264,17 @@ def get_max_tokens_for_query(query: str, model_size: str = "32b") -> int:
     if any(w in lower for w in code_words):
         return 2048
 
-    # Reasoning/planning/analysis (needs room for multi-step thought)
+    # Reasoning/planning/analysis (needs room for multi-step thought + improved code)
     reason_words = {"explain", "detail", "comprehensive", "thorough", "compare",
                     "analyze", "reason", "plan", "decompose", "evaluate", "why",
                     "how does", "describe", "architecture", "trade-off"}
     if any(w in lower for w in reason_words):
-        return 1536
+        return 2048
 
-    # Questions about files/code (need room to describe)
+    # Questions about files/code (need room to describe + show improved version)
     project_words = {"file", "module", "engine", "brain", "router", "what does"}
     if any(w in lower for w in project_words):
-        return 1024
+        return 1536
 
     # Very short queries → short responses
     if word_count <= 5:

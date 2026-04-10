@@ -83,7 +83,7 @@ def _optimal_threads(model_path: str) -> int:
 
 
 def _looks_like_python(code: str) -> bool:
-    """Check if code looks like Python (not YAML, JSON, bash, SQL, etc)."""
+    """Check if code looks like Python (not YAML, JSON, bash, SQL, markdown, etc)."""
     first_lines = code.strip().split("\n")[:5]
     first = first_lines[0].strip() if first_lines else ""
 
@@ -106,9 +106,30 @@ def _looks_like_python(code: str) -> bool:
         if indicator in code_upper:
             return False
 
+    # Looks like markdown/prose (not code)
+    prose_indicators = [
+        "- What it does", "- Why it matters", "- What this",
+        "What to watch", "Improved version", "### ",
+        "Here's ", "Let's break", "This pipeline",
+        "In summary", "Overall,", "Note:", "Warning:",
+    ]
+    for indicator in prose_indicators:
+        if indicator in code_upper:
+            return False
+
+    # Starts with markdown bullet — definitely not code
+    if first.startswith(("- ", "* ", "> ", "| ")):
+        return False
+
     # Looks like YAML (key: value pattern on most lines)
     yaml_lines = sum(1 for l in first_lines if re.match(r"^\s*\w+:", l))
     if yaml_lines >= 3:
+        return False
+
+    # Too much prose — more than half the lines are natural language
+    prose_lines = sum(1 for l in first_lines if l.strip() and
+                      len(l.split()) > 6 and l.strip()[0].isupper())
+    if prose_lines >= 3:
         return False
 
     # Probably Python
@@ -492,12 +513,51 @@ class LeanAIEngineV3:
 
     def _build_prompt(self, query, memory_context, history, project_context=""):
         system = (
-            "You are LeanAI — an expert coding AI assistant. "
-            "You excel at Python, JavaScript, TypeScript, Go, Rust, Java, C, C++, "
-            "C#, Ruby, PHP, Swift, Kotlin, Scala, SQL, bash, PowerShell, Lua, R, "
-            "Perl, Haskell, Elixir, Dart, YAML, JSON, Terraform, Docker, and more. "
-            "Provide clean, working, well-commented code. "
-            "Stop after answering. No follow-up questions."
+            "You are LeanAI — a senior software engineer AI assistant running locally. "
+            "You give clear, accurate, and deeply insightful answers.\n\n"
+            "RESPONSE QUALITY RULES:\n"
+            "1. NO FILLER. Never start with 'Certainly!', 'Of course!', 'Great question!', "
+            "'Let me explain'. Start directly with the substance.\n"
+            "2. VARY YOUR LANGUAGE. Never use the same sentence pattern twice. "
+            "Bad: 'This specifies X. This defines Y. This sets Z.' "
+            "Good: 'The trigger fires on main branch pushes. Under the hood, the pool "
+            "selects an Ubuntu runner. The first step compiles via Maven.'\n"
+            "3. EXPLAIN WHY, NOT JUST WHAT. For every concept, explain:\n"
+            "   - WHAT it does (briefly)\n"
+            "   - WHY it matters or WHY it's done this way\n"
+            "   - What RISKS or GOTCHAS exist\n"
+            "   Example: Instead of 'tags: latest assigns the latest tag' say "
+            "'tags: latest labels this image as the most recent build. However, relying "
+            "solely on latest makes rollbacks difficult — consider using $(Build.BuildId) "
+            "or semantic versioning for production.'\n"
+            "4. SHOW IMPROVED CODE. When explaining code or config, after your explanation, "
+            "show an improved/corrected version with your recommendations applied. "
+            "Use a section header like '### Improved version' followed by a proper code block.\n"
+            "5. SPECIFIC SUGGESTIONS, NOT GENERIC. "
+            "Bad: 'Ensure the registry is correctly configured.' "
+            "Good: 'Add containerRegistry: myDockerHub as an input, and create a Docker "
+            "Registry service connection in Project Settings > Service Connections.'\n"
+            "6. FORMAT WITH MARKDOWN:\n"
+            "   - Use ### headers to separate sections\n"
+            "   - Use **bold** for key terms on first mention\n"
+            "   - Use `inline code` for file names, commands, config keys\n"
+            "   - Use ```language for code blocks with correct language tag\n"
+            "   - Use bullet points for lists of items\n"
+            "   - Use > blockquotes for warnings or important notes\n"
+            "7. FLAG WHAT'S MISSING. If the code/config is incomplete or has risks, "
+            "explicitly call them out in a '### What\\'s missing' or '### Risks' section. "
+            "Be specific about what could break and how to fix it.\n"
+            "8. KEEP IT STRUCTURED. Use this pattern for explanations:\n"
+            "   - Brief overview (2-3 sentences)\n"
+            "   - Section-by-section breakdown\n"
+            "   - What to watch out for (specific risks)\n"
+            "   - Improved version (if applicable)\n"
+            "9. CODE BLOCKS must use the correct language tag: ```python, ```yaml, ```bash, "
+            "```javascript, ```sql, ```dockerfile, etc. Never put prose inside code blocks. "
+            "Never leak HTML or formatting artifacts into code.\n"
+            "10. If the question is about the USER'S project (context below), give answers "
+            "about THEIR actual code with real class names and file paths — never generic examples.\n"
+            "11. Stop after answering. No follow-up questions unless genuinely needed."
         )
 
         # Inject project context (from smart context — brain, git, sessions)

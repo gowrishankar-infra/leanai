@@ -425,13 +425,18 @@ function sendQuick(msg) {
 }
 
 function highlightCode(code, lang) {
+    // Skip highlighting for non-Python languages
+    const pyLangs = ['python', 'py', '', 'code'];
+    if (!pyLangs.includes(lang.toLowerCase())) {
+        return code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
     let h = code
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/(#.*$)/gm, '<span class="cmt">$1</span>')
         .replace(/\\b(def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|as|yield|async|await|raise|pass|break|continue|lambda|and|or|not|in|is|global|nonlocal)\\b/g, '<span class="kw">$1</span>')
         .replace(/\\b(print|len|range|str|int|float|list|dict|set|type|isinstance|hasattr|getattr|open|super|enumerate|zip|map|filter|sorted|True|False|None)\\b/g, '<span class="bi">$1</span>')
         .replace(/\\b(self)\\b/g, '<span class="kw">$1</span>')
-        .replace(/(@\\w+)/g, '<span class="dec">$1</span>')
+        .replace(/^(@\\w+)/gm, '<span class="dec">$1</span>')
         .replace(/(["'])(?:(?!\\\\1).)*?\\1/g, '<span class="str">$&</span>')
         .replace(/\\b(\\d+\\.?\\d*)\\b/g, '<span class="num">$1</span>');
     return h;
