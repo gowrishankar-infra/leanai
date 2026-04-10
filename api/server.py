@@ -51,6 +51,7 @@ from core.reasoning_engine import ReasoningEngine
 from core.writing_engine import WritingEngine
 from core.speed_optimizer import SpeedOptimizer
 from core.speed_optimizer import get_max_tokens_for_query
+from core.model_manager import ModelManager
 from brain.semantic_bisect import SemanticGitBisect
 from brain.evolution_tracker import EvolutionTracker
 from tools.adversarial import AdversarialVerifier
@@ -165,6 +166,7 @@ async def lifespan(app):
     evolution = EvolutionTracker()
     adversarial = AdversarialVerifier()
     code_enhancer = CodeQualityEnhancer(model_fn=_model_fn, enabled=True)
+    model_mgr = ModelManager()
 
     print("[API] LeanAI ready at http://localhost:8000")
     print("[API] Web UI at http://localhost:8000/")
@@ -209,6 +211,7 @@ semantic_bisect: Optional[SemanticGitBisect] = None
 evolution: Optional[EvolutionTracker] = None
 adversarial: Optional[AdversarialVerifier] = None
 code_enhancer: Optional[CodeQualityEnhancer] = None
+model_mgr = None
 
 
 def _model_fn(system_prompt: str, user_prompt: str) -> str:
@@ -257,6 +260,175 @@ def _swarm_model_fn(prompt: str, temperature: float) -> str:
     return result["choices"][0]["text"].strip()
 
 
+# ── Command handler for slash commands via chat ───────────────
+
+async def _handle_chat_command(msg: str) -> str:
+    """Handle slash commands sent through the chat endpoint (from VS Code)."""
+    global brain, editor_inst, git_intel
+
+    parts = msg.split(None, 1)
+    cmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    # /brain — scan project
+    if cmd == "/brain":
+        path = os.path.abspath(arg or ".")
+        if not os.path.isdir(path):
+            return f"Not a directory: {path}"
+        brain = ProjectBrain(path)
+        editor_inst = MultiFileEditor(path)
+        git_intel = GitIntel(path)
+        semantic_bisect.repo_path = path
+        result = brain.scan(force=False)
+        completer.update_brain(brain)
+        stats = brain.graph.stats()
+        return (
+            f"Brain scan complete!\n\n"
+            f"- **Files:** {stats.get('files', 0)} indexed\n"
+            f"- **Functions:** {stats.get('functions', 0)}\n"
+            f"- **Classes:** {stats.get('classes', 0)}\n"
+            f"- **Dependency edges:** {stats.get('edges', 0)}\n\n"
+            f"You can now ask questions about your project. "
+            f"Try: 'describe main.py' or 'what does the engine do?'"
+        )
+
+    # /describe — describe a file
+    if cmd == "/describe":
+        if not brain:
+            return "Run `/brain .` first to scan your project."
+        if not arg:
+            return "Usage: `/describe <filename>`"
+        return brain.describe_file(arg)
+
+    # /deps — show dependencies
+    if cmd == "/deps":
+        if not brain:
+            return "Run `/brain .` first to scan your project."
+        if not arg:
+            return "Usage: `/deps <filename>`"
+        return brain.get_dependencies(arg)
+
+    # /impact — show impact
+    if cmd == "/impact":
+        if not brain:
+            return "Run `/brain .` first to scan your project."
+        if not arg:
+            return "Usage: `/impact <filename>`"
+        return brain.impact_analysis(arg)
+
+    # /find — find a function
+    if cmd == "/find":
+        if not brain:
+            return "Run `/brain .` first to scan your project."
+        if not arg:
+            return "Usage: `/find <function_name>`"
+        return brain.find_function(arg)
+
+    # /git commands
+    if cmd == "/git":
+        if not git_intel or not git_intel.is_available:
+            return "Not a git repository."
+        sub = arg.split(None, 1)
+        subcmd = sub[0].lower() if sub else ""
+        subarg = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "activity":
+            return git_intel.recent_activity(days=7)
+        elif subcmd == "hotspots":
+            return git_intel.hotspots(limit=10)
+        elif subcmd == "changelog":
+            return git_intel.generate_changelog()
+        elif subcmd == "history" and subarg:
+            return git_intel.file_history(subarg)
+        elif subcmd == "why" and subarg:
+            return git_intel.why_file_changed(subarg)
+        else:
+            return "Usage: `/git activity`, `/git hotspots`, `/git changelog`, `/git history <file>`, `/git why <file>`"
+
+    # /complete — autocomplete
+    if cmd == "/complete":
+        if not arg:
+            return "Usage: `/complete <prefix>`"
+        results = completer.complete(arg)
+        if not results:
+            return f"No completions for '{arg}'"
+        lines = [f"Completions for '{arg}':"]
+        for r in results[:10]:
+            lines.append(f"  {r.kind[0]}  {r.label} — {r.detail}")
+        return "\n".join(lines)
+
+    # /fuzz — adversarial fuzzing
+    if cmd == "/fuzz":
+        if not arg:
+            return "Usage: `/fuzz <python function>`"
+        result = adversarial.verify(arg)
+        return result.summary()
+
+    # /remember — store a fact
+    if cmd == "/remember":
+        if not arg:
+            return "Usage: `/remember <fact>`"
+        engine.memory.store_episode(arg, arg, {"source": "user"})
+        return f'Stored in memory: "{arg}"'
+
+    # /profile
+    if cmd == "/profile":
+        profile = engine.memory.get_user_profile()
+        if not profile:
+            return "No profile data yet. Use `/remember` to add facts."
+        lines = ["What I know about you:"]
+        for k, v in profile.items():
+            lines.append(f"  {k}: {v}")
+        return "\n".join(lines)
+
+    # /model
+    if cmd == "/model":
+        if not arg:
+            return "Usage: `/model auto`, `/model list`, `/model qwen-7b`, `/model qwen-32b`"
+        if arg == "list":
+            return model_mgr.list_models() if model_mgr else "Model manager not available."
+        if arg in ("auto", "fast", "quality"):
+            if model_mgr:
+                model_mgr.set_mode(arg)
+                return f"Mode set to {arg.upper()}"
+            return "Model manager not available."
+        return f"Unknown model command: {arg}"
+
+    # /status
+    if cmd == "/status":
+        return (
+            f"Model: {engine.model_name}\n"
+            f"Format: {engine.prompt_format}\n"
+            f"Threads: {engine.n_threads}\n"
+            f"Memory: {engine.memory.count()} episodes\n"
+            f"Brain: {'loaded' if brain else 'not loaded'}"
+        )
+
+    # /help
+    if cmd == "/help":
+        return (
+            "Available commands:\n"
+            "  /brain .          — scan your project\n"
+            "  /describe <file>  — describe a file\n"
+            "  /deps <file>      — show dependencies\n"
+            "  /impact <file>    — impact analysis\n"
+            "  /find <function>  — find a function\n"
+            "  /git activity     — recent git activity\n"
+            "  /git hotspots     — most changed files\n"
+            "  /git changelog    — auto-generated changelog\n"
+            "  /complete <text>  — autocomplete from project\n"
+            "  /fuzz <code>      — adversarial testing\n"
+            "  /remember <fact>  — store a fact\n"
+            "  /profile          — view your profile\n"
+            "  /model auto       — auto-switch models\n"
+            "  /status           — system status\n"
+            "  /help             — this message"
+        )
+
+    # Unknown command — return None to fall through to regular chat
+    return None
+
+
 # ── Endpoints ─────────────────────────────────────────────────────
 
 @app.post("/chat", response_model=ChatResponse)
@@ -264,19 +436,32 @@ async def chat(req: ChatRequest):
     """Send a message to LeanAI."""
     try:
         start = time.time()
+        msg = req.message.strip()
+
+        # ── Route slash commands from VS Code ──────────────────────
+        if msg.startswith("/"):
+            cmd_result = await _handle_chat_command(msg)
+            if cmd_result is not None:
+                elapsed = time.time() - start
+                return ChatResponse(
+                    text=cmd_result, confidence=90, confidence_label="Command",
+                    tier="command", latency_ms=elapsed * 1000,
+                )
+
+        # ── Regular chat ───────────────────────────────────────────
         # Smart max_tokens: auto-detect based on query type if not specified
-        tokens = req.max_tokens if req.max_tokens > 0 else get_max_tokens_for_query(req.message)
+        tokens = req.max_tokens if req.max_tokens > 0 else get_max_tokens_for_query(msg)
         config = GenerationConfig(
             max_tokens=tokens,
             temperature=req.temperature,
         )
-        resp = engine.generate(req.message, config=config)
+        resp = engine.generate(msg, config=config)
         elapsed = time.time() - start
 
         # Two-pass quality: review code responses for bugs
         resp_text = getattr(resp, "text", str(resp))
-        if code_enhancer and code_enhancer.should_review(req.message, resp_text):
-            resp_text = code_enhancer.enhance(resp_text, query=req.message)
+        if code_enhancer and code_enhancer.should_review(msg, resp_text):
+            resp_text = code_enhancer.enhance(resp_text, query=msg)
 
         confidence = getattr(resp, "confidence", 0.5)
         if isinstance(confidence, float) and 0 < confidence <= 1.0:
