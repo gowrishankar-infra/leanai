@@ -35,13 +35,17 @@ LeanAI is different:
 
 ## Quick Start
 
-### Prerequisites
+### One-Command Setup
 
-- Python 3.10+ (tested on 3.13)
-- 8 GB RAM minimum (32 GB recommended for 32B model)
-- ~5 GB disk space for 7B model, ~20 GB for 32B model
+```bash
+git clone https://github.com/gowrishankar-infra/leanai.git
+cd leanai
+python setup_leanai.py
+```
 
-### Install
+That's it. The setup script checks your system, installs dependencies, downloads the 7B model (4.4 GB), and launches LeanAI.
+
+### Manual Setup (if you prefer)
 
 ```bash
 git clone https://github.com/gowrishankar-infra/leanai.git
