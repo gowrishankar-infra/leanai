@@ -54,6 +54,7 @@ from core.speed_optimizer import get_max_tokens_for_query
 from brain.semantic_bisect import SemanticGitBisect
 from brain.evolution_tracker import EvolutionTracker
 from tools.adversarial import AdversarialVerifier
+from core.code_quality import CodeQualityEnhancer
 
 
 # ── Request/Response models ───────────────────────────────────────
@@ -163,6 +164,7 @@ async def lifespan(app):
     semantic_bisect = SemanticGitBisect(repo_path=".", model_fn=_model_fn)
     evolution = EvolutionTracker()
     adversarial = AdversarialVerifier()
+    code_enhancer = CodeQualityEnhancer(model_fn=_model_fn, enabled=True)
 
     print("[API] LeanAI ready at http://localhost:8000")
     print("[API] Web UI at http://localhost:8000/")
@@ -206,6 +208,7 @@ speed: Optional[SpeedOptimizer] = None
 semantic_bisect: Optional[SemanticGitBisect] = None
 evolution: Optional[EvolutionTracker] = None
 adversarial: Optional[AdversarialVerifier] = None
+code_enhancer: Optional[CodeQualityEnhancer] = None
 
 
 def _model_fn(system_prompt: str, user_prompt: str) -> str:
@@ -270,12 +273,17 @@ async def chat(req: ChatRequest):
         resp = engine.generate(req.message, config=config)
         elapsed = time.time() - start
 
+        # Two-pass quality: review code responses for bugs
+        resp_text = getattr(resp, "text", str(resp))
+        if code_enhancer and code_enhancer.should_review(req.message, resp_text):
+            resp_text = code_enhancer.enhance(resp_text, query=req.message)
+
         confidence = getattr(resp, "confidence", 0.5)
         if isinstance(confidence, float) and 0 < confidence <= 1.0:
             confidence *= 100
 
         return ChatResponse(
-            text=getattr(resp, "text", str(resp)),
+            text=resp_text,
             confidence=confidence,
             confidence_label=getattr(resp, "confidence_label", ""),
             tier=getattr(resp, "tier_used", "unknown"),

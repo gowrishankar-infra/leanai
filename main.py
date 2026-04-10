@@ -21,6 +21,7 @@ from core.predictor import PredictivePreGenerator
 from brain.semantic_bisect import SemanticGitBisect
 from brain.evolution_tracker import EvolutionTracker
 from tools.adversarial import AdversarialVerifier
+from core.code_quality import CodeQualityEnhancer
 from core.streaming import StreamingGenerator, StreamConfig, print_streaming_header, print_streaming_footer
 from core.smart_context import SmartContext
 from core.auto_recovery import AutoRecovery, RecoveryConfig
@@ -180,6 +181,9 @@ def main():
 
     # ── Adversarial Verification ──────────────────────────────────
     adversarial = AdversarialVerifier()
+
+    # ── Code Quality Enhancer (two-pass review) ───────────────────
+    code_enhancer = CodeQualityEnhancer(model_fn=model_fn, enabled=True)
 
     # ══════════════════════════════════════════════════════════════
     # STARTUP DISPLAY
@@ -781,13 +785,7 @@ def main():
                     continue
                 print(f"Switching to {model_info.name}...")
                 try:
-                    # Unload current model
-                    engine._model = None
-                    import gc; gc.collect()
-                    # Load new model
-                    engine.model_name = model_info.filename
-                    engine.model_path = model_path
-                    engine._load_model()
+                    engine.switch_model(model_path)
                     current_model_key = model_key
                     print(f"Loaded {model_info.name} ({model_info.speed_label}, quality: {model_info.quality_score}%)")
                 except Exception as e:
@@ -1008,10 +1006,12 @@ def main():
             cached = speed.should_use_cache(user_input)
             if cached:
                 text, confidence = cached
-                elapsed = time.time() - start
-                print(f"\nLeanAI (cached):\n{text}")
-                print("───────────────────────────────────────────────────────")
-                print(f"Confidence  {confidence:.0f}%  | ⚡ CACHED — instant")
+                print_response_header()
+                print(f"  {C.DIM}⚡ from cache{C.RESET}")
+                print(format_response(text))
+                separator()
+                print(format_confidence(confidence, "Cached"))
+                print(f"  {C.BGREEN}⚡ CACHED — instant{C.RESET}")
                 sessions.add_exchange(query=user_input, response=text, tier="cache", confidence=confidence)
                 evolution.track_query(user_input, session_id=str(current_session.id))
                 continue
@@ -1020,10 +1020,12 @@ def main():
             predicted = predictor.check_prediction(user_input)
             if predicted:
                 text, confidence = predicted
-                elapsed = time.time() - start
-                print(f"\nLeanAI (predicted):\n{text}")
-                print("───────────────────────────────────────────────────────")
-                print(f"Confidence  {confidence*100:.0f}%  | 🔮 PREDICTED — pre-generated")
+                print_response_header()
+                print(f"  {C.DIM}🔮 predicted{C.RESET}")
+                print(format_response(text))
+                separator()
+                print(format_confidence(confidence * 100, "Predicted"))
+                print(f"  {C.BMAGENTA}🔮 PREDICTED — pre-generated{C.RESET}")
                 sessions.add_exchange(query=user_input, response=text, tier="predicted", confidence=confidence*100)
                 evolution.track_query(user_input, session_id=str(current_session.id))
                 continue
@@ -1042,11 +1044,7 @@ def main():
                         complexity = classify_complexity(user_input)
                         print(f"  [Auto] {complexity} query → switching to {best_info.name}...", flush=True)
                         try:
-                            engine._model = None
-                            import gc; gc.collect()
-                            engine.model_name = best_info.filename
-                            engine.model_path = best_path
-                            engine._load_model()
+                            engine.switch_model(best_path)
                             current_model_key = best_model
                         except Exception:
                             pass  # stay on current model
@@ -1061,11 +1059,7 @@ def main():
                         if fb_path and fallback != current_model_key:
                             print(f"  [Auto] Loading {fb_info.name}...", flush=True)
                             try:
-                                engine._model = None
-                                import gc; gc.collect()
-                                engine.model_name = fb_info.filename
-                                engine.model_path = fb_path
-                                engine._load_model()
+                                engine.switch_model(fb_path)
                                 current_model_key = fallback
                             except Exception:
                                 pass
@@ -1139,6 +1133,12 @@ def main():
             code_output = getattr(resp, "code_output", "")
 
             # Print response with formatting
+            # Two-pass quality: if response contains code, run a review pass
+            if code_enhancer.should_review(user_input, text):
+                print(f"  {C.DIM}Running code review...{C.RESET}", end="", flush=True)
+                text = code_enhancer.enhance(text, query=user_input)
+                print(f"\r{' ' * 40}\r", end="", flush=True)
+
             print_response_header()
             print(format_response(text))
 

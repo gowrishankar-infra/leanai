@@ -77,15 +77,27 @@ def _detect_prompt_format(model_path: str) -> str:
 def _optimal_threads(model_path: str) -> int:
     name = Path(model_path).name.lower()
     cpu = os.cpu_count() or 8
+    # All models benefit from max threads on modern CPUs
     if any(x in name for x in ["7b", "6b", "8b"]): return min(cpu, 16)
-    if any(x in name for x in ["33b", "34b"]): return min(cpu, 8)
-    return min(cpu, 8)
+    if any(x in name for x in ["32b", "33b", "34b", "70b"]): return min(cpu, 16)
+    return min(cpu, 16)
 
 
 def _looks_like_python(code: str) -> bool:
-    """Check if code looks like Python (not YAML, JSON, bash, SQL, markdown, etc)."""
+    """Check if code looks like Python (not YAML, JSON, bash, SQL, markdown, Go, etc)."""
+    # Skip very short content (just a language tag like "go", "rust", etc)
+    if len(code.strip()) < 10:
+        return False
+
     first_lines = code.strip().split("\n")[:5]
     first = first_lines[0].strip() if first_lines else ""
+
+    # First line is just a language name (from ```go blocks where tag leaked into content)
+    lang_tags = {"go", "rust", "java", "javascript", "typescript", "c", "cpp",
+                 "ruby", "php", "swift", "kotlin", "scala", "bash", "sh",
+                 "yaml", "yml", "json", "sql", "html", "css", "dockerfile"}
+    if first.lower() in lang_tags:
+        return False
 
     # Definitely NOT Python
     non_python_indicators = [
@@ -472,6 +484,26 @@ class LeanAIEngineV3:
     def training_status(self):
         return self.trainer.status()
 
+    def switch_model(self, new_model_path: str):
+        """Switch to a different model. Properly unloads old model first."""
+        if new_model_path == self.model_path and self._model is not None:
+            return  # already loaded
+
+        # Unload current model
+        if self._model is not None:
+            del self._model
+            self._model = None
+
+        # Reset state
+        self._model_loaded = False
+        self.model_path = new_model_path
+        self.model_name = Path(new_model_path).name
+        self.prompt_format = _detect_prompt_format(new_model_path)
+        self.n_threads = _optimal_threads(new_model_path)
+
+        # Load new model immediately
+        self._load_model()
+
     # ── Private ────────────────────────────────────────────────────────
 
     def _load_model(self):
@@ -479,7 +511,7 @@ class LeanAIEngineV3:
             return
         if not Path(self.model_path).exists():
             print(f"[LeanAI v3] Model not found: {self.model_path}")
-            self._model_loaded = True
+            # DON'T set _model_loaded = True — allow retry with different path
             return
         try:
             from llama_cpp import Llama
@@ -494,12 +526,21 @@ class LeanAIEngineV3:
             self._model_loaded = True
             print("[LeanAI v3] Model loaded. Ready.")
         except ImportError:
+            print("[LeanAI v3] llama-cpp-python not installed")
             self._model_loaded = True
+        except Exception as e:
+            print(f"[LeanAI v3] Error loading model: {e}")
+            # DON'T set _model_loaded = True — allow retry
 
     def _generate_with_model(self, prompt, config):
         self._load_model()
         if self._model is None:
-            return "Demo mode — run: python setup.py --download-model --model qwen25-coder"
+            return (
+                "Model not loaded. Possible causes:\n"
+                "- Model file not found at: " + str(self.model_path) + "\n"
+                "- Run: python setup_leanai.py  (downloads model automatically)\n"
+                "- Or: /model list  (to see available models)"
+            )
         stop_tokens = ["<|im_end|>", "<|im_start|>", "<|user|>", "<|end|>",
                        "<|assistant|>", "\nYou:", "\nHuman:", "\nUser:"]
         result = self._model(prompt, max_tokens=config.max_tokens,
