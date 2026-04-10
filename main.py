@@ -17,6 +17,10 @@ from core.reasoning_engine import ReasoningEngine
 from core.writing_engine import WritingEngine
 from core.speed_optimizer import SpeedOptimizer
 from core.completer import AutoCompleter
+from core.predictor import PredictivePreGenerator
+from brain.semantic_bisect import SemanticGitBisect
+from brain.evolution_tracker import EvolutionTracker
+from tools.adversarial import AdversarialVerifier
 from core.streaming import StreamingGenerator, StreamConfig, print_streaming_header, print_streaming_footer
 from core.smart_context import SmartContext
 from core.auto_recovery import AutoRecovery, RecoveryConfig
@@ -162,7 +166,19 @@ def main():
     smart_ctx = SmartContext(brain=None, git_intel=git_intel, session_store=sessions, hdc=hdc)
 
     # ── Autocomplete ──────────────────────────────────────────────
-    completer = AutoCompleter(brain=None)  # updated after /brain scan
+    completer = AutoCompleter(brain=None)
+
+    # ── Predictive Pre-Generation ─────────────────────────────────
+    predictor = PredictivePreGenerator(generate_fn=None)
+
+    # ── Semantic Git Bisect ───────────────────────────────────────
+    semantic_bisect = SemanticGitBisect(repo_path=".", model_fn=model_fn)
+
+    # ── Cross-Session Evolution ───────────────────────────────────
+    evolution = EvolutionTracker()
+
+    # ── Adversarial Verification ──────────────────────────────────
+    adversarial = AdversarialVerifier()
 
     # ══════════════════════════════════════════════════════════════
     # STARTUP DISPLAY
@@ -825,6 +841,74 @@ def main():
             print(f"Index: {cs['functions_indexed']} functions, {cs['classes_indexed']} classes")
 
         # ══════════════════════════════════════════════════════════
+        # SEMANTIC GIT BISECT
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/bisect"):
+            query = user_input[7:].strip()
+            if not query:
+                print("Usage: /bisect <bug description>")
+                print("  /bisect authentication stopped working")
+                print("  /bisect tests failing after refactor")
+                continue
+            semantic_bisect.repo_path = os.path.abspath(".")
+            result = semantic_bisect.find_bug(query, num_commits=20, verbose=True)
+            print(f"\n{result.summary()}")
+            sessions.add_exchange(query=user_input, response=result.summary(), tier="bisect")
+
+        # ══════════════════════════════════════════════════════════
+        # CROSS-SESSION EVOLUTION
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/evolution") or cmd.startswith("/evolve"):
+            subcmd = user_input.split(None, 1)[1] if " " in user_input else "narrative"
+            if subcmd == "narrative":
+                print(evolution.get_narrative())
+            elif subcmd == "insights":
+                insights = evolution.get_insights()
+                if insights:
+                    for ins in insights:
+                        print(f"\n{ins.summary()}")
+                else:
+                    print("No evolution insights yet. Keep using LeanAI!")
+            elif subcmd == "predict":
+                preds = evolution.predict_next_topics()
+                if preds:
+                    print("Predicted next topics:")
+                    for p in preds:
+                        print(f"  → {p}")
+                else:
+                    print("Not enough data to predict yet.")
+            elif subcmd == "stats":
+                s = evolution.stats()
+                print(f"Themes tracked: {s['themes_tracked']}")
+                print(f"Total occurrences: {s['total_occurrences']}")
+                for t in s.get("active_themes", []):
+                    print(f"  {t}")
+            else:
+                print("Evolution commands:")
+                print("  /evolution narrative  — project story")
+                print("  /evolution insights   — evolution insights")
+                print("  /evolution predict    — predict next topics")
+                print("  /evolution stats      — tracking stats")
+
+        # ══════════════════════════════════════════════════════════
+        # ADVERSARIAL CODE VERIFICATION
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/fuzz"):
+            code = user_input[5:].strip()
+            if not code:
+                print("Usage: /fuzz <python code>")
+                print("  /fuzz def sort(arr): return sorted(arr)")
+                print("  /fuzz def add(a, b): return a + b")
+                continue
+            print("[Fuzz] Running adversarial verification...", flush=True)
+            result = adversarial.fuzz(code, verbose=True)
+            print(f"\n{result.summary()}")
+            sessions.add_exchange(query=user_input, response=result.summary(), tier="fuzz")
+
+        # ══════════════════════════════════════════════════════════
         # FINE-TUNING COMMANDS
         # ══════════════════════════════════════════════════════════
 
@@ -937,6 +1021,19 @@ def main():
                 print("───────────────────────────────────────────────────────")
                 print(f"Confidence  {confidence:.0f}%  | ⚡ CACHED — instant")
                 sessions.add_exchange(query=user_input, response=text, tier="cache", confidence=confidence)
+                evolution.track_query(user_input, session_id=str(current_session.session_id))
+                continue
+
+            # Predictive: Check if we pre-generated this answer
+            predicted = predictor.check_prediction(user_input)
+            if predicted:
+                text, confidence = predicted
+                elapsed = time.time() - start
+                print(f"\nLeanAI (predicted):\n{text}")
+                print("───────────────────────────────────────────────────────")
+                print(f"Confidence  {confidence*100:.0f}%  | 🔮 PREDICTED — pre-generated")
+                sessions.add_exchange(query=user_input, response=text, tier="predicted", confidence=confidence*100)
+                evolution.track_query(user_input, session_id=str(current_session.session_id))
                 continue
 
             # Phase 6b: Liquid router decides tier
@@ -1139,6 +1236,13 @@ def main():
                 source=tier,
                 verified=code_exec and code_passed,
             )
+
+            # Evolution: track themes across sessions
+            evolution.track_query(user_input, session_id=str(current_session.session_id))
+
+            # Predictor: predict follow-ups and start pre-generating
+            if predictor.generate_fn:
+                predictor.on_query_complete(user_input, text)
 
 
 if __name__ == "__main__":
