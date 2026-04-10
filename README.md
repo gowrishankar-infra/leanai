@@ -1,3 +1,7 @@
+> **Created by [Gowri Shankar](https://github.com/gowrishankar-infra)** — A DevOps engineer from Hyderabad who built an AI coding system from scratch.
+> Licensed under [AGPL-3.0](LICENSE) — free to use, must credit author, modifications must be open-sourced.
+
+
 # LeanAI
 
 **The AI that knows your code. Runs on your machine. Gets smarter every day.**

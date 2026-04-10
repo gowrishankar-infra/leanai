@@ -1,0 +1,32 @@
+LeanAI — Project-Aware Local AI Coding System
+Copyright (C) 2025-2026 Gowri Shankar (@gowrishankar-infra)
+
+This product was created by Gowri Shankar (Hyderabad, India).
+GitHub: https://github.com/gowrishankar-infra/leanai
+
+ORIGINAL AUTHOR ATTRIBUTION REQUIRED
+=====================================
+This notice must be preserved in all copies or substantial portions
+of the software, including forks, derivatives, and redistributions.
+
+If you use LeanAI or any substantial portion of its code in your
+project, you must:
+  1. Credit "Gowri Shankar" as the original author
+  2. Link to the original repository
+  3. Keep this NOTICE file intact
+
+PROJECT HISTORY
+===============
+- Architecture designed and directed by Gowri Shankar
+- Development started: April 2025
+- 29 integrated systems, 500+ tests, 27,000+ lines
+- Built on: Windows 11, i7-11800H, 32GB RAM, RTX 3050 Ti
+- Models: Qwen2.5 Coder 7B + 32B
+
+THIRD-PARTY COMPONENTS
+======================
+- llama-cpp-python (MIT License) — LLM inference
+- ChromaDB (Apache 2.0) — vector database
+- FastAPI (MIT License) — web server
+- Qwen2.5 Coder (Apache 2.0) — language model
+- sentence-transformers (Apache 2.0) — embeddings
