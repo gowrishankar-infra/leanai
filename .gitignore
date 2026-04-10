@@ -1,10 +1,48 @@
-﻿__pycache__/
-*.pyc
-.pytest_cache/
+# Models (large files — users download their own)
 *.gguf
-.env
+*.bin
+models/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
 *.egg-info/
 dist/
 build/
+*.egg
 .venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# LeanAI user data (personal to each user)
+.leanai/
+chroma_data/
+*.db
+*.sqlite3
+
+# Training data (personal)
+training_exports/
+adapters/
+
+# Temp files
+*.tmp
+*.bak
 *.log
+
+# Node (VS Code extension)
+node_modules/
+
+# Launch posts (personal, not part of project)
+launch-posts.md

@@ -1,8 +1,7 @@
-> **Created by [Gowri Shankar](https://github.com/gowrishankar-infra)** — A DevOps engineer from Hyderabad who built an AI coding system from scratch.
-> Licensed under [AGPL-3.0](LICENSE) — free to use, must credit author, modifications must be open-sourced.
-
-
 # LeanAI
+
+> **Created by [Gowri Shankar](https://github.com/gowrishankar-infra)** — Built with Claude as coding partner.
+> Licensed under [AGPL-3.0](LICENSE) — free to use, must credit author, modifications must be open-sourced.
 
 **The AI that knows your code. Runs on your machine. Gets smarter every day.**
 
@@ -18,13 +17,19 @@ Every AI coding tool today shares the same flaw: they see your code for the firs
 
 LeanAI is different:
 
-- **It knows your entire codebase.** 1,216 functions mapped, 7,023 dependency edges tracked, full AST analysis. When you say "add authentication to the API," it already knows every route, every model, every middleware.
+- **It knows your entire codebase.** 1,581 functions mapped, 9,053 dependency edges tracked, full AST analysis. When you say "add authentication to the API," it already knows every route, every model, every middleware.
 
 - **It never forgets.** Session 1's decisions are available in session 5. Every conversation is permanently searchable. Your name, your preferences, your project history — all remembered.
 
 - **It proves its code works.** The TDD loop generates code, runs tests, reads errors, fixes bugs, and loops until every test passes. The output is verified correct, regardless of model size.
 
 - **It gets smarter from YOUR code.** Every interaction collects training data. After enough examples, QLoRA fine-tuning makes the model learn YOUR naming conventions, YOUR patterns, YOUR preferred libraries.
+
+- **Sub-2ms autocomplete.** Indexes every function in your project. Type a prefix, get completions from YOUR codebase — no model call needed.
+
+- **Semantic git bisect.** "Find which commit broke auth" — AI analyzes commits semantically and predicts the culprit with reasoning.
+
+- **Adversarial code verification.** Generates edge-case inputs designed to break your code, finds bugs, suggests fixes. All in under 1 second.
 
 ---
 
@@ -88,7 +93,7 @@ LeanAI: Your name is Gowri.
 Confidence [███████████████████░] 95%  |  0ms  |  From memory
 
 You: /brain .
-Scanned 82 files in 869ms | 1,216 functions | 228 classes | 7,023 edges
+Scanned 86 files in 869ms | 1,581 functions | 297 classes | 9,053 edges
 
 You: /git hotspots
   5 █████ main.py
@@ -269,7 +274,7 @@ You: what is Python?     → instant ⚡ CACHED
 |---------|-------------|---------|--------|
 | Raw reasoning | 98% | 70% | ~85% (3-pass) |
 | Code generation | 95% | 90% | 92% (32B) |
-| Knows your full codebase | ❌ | Partial | ✅ 7,023 edges |
+| Knows your full codebase | ❌ | Partial | ✅ 9,053 edges |
 | Remembers across sessions | ❌ | ❌ | ✅ Full history |
 | Verifies code works | ❌ | ❌ | ✅ TDD loop |
 | Dependency graph | ❌ | ❌ | ✅ Impact analysis |
@@ -336,26 +341,40 @@ leanai/
 | Memory | `/remember <fact>`, `/profile`, `/sessions`, `/continue`, `/search <q>` |
 | Fine-Tune | `/finetune status`, `/finetune train`, `/finetune adapters`, `/finetune collect` |
 | Model | `/model list`, `/model auto`, `/model qwen-32b`, `/model download <x>` |
-| System | `/status`, `/speed`, `/help`, `/quit` |
+| System | `/status`, `/speed`, `/complete <prefix>`, `/help`, `/quit` |
+| Novel | `/bisect <bug>`, `/fuzz <code>`, `/evolution narrative`, `/evolution insights` |
 
 ---
 
 ## Stats
 
-- **25 integrated systems**
-- **450+ tests** across 17 test files
-- **25,000+ lines** of Python
-- **40+ CLI commands**
-- **20+ API endpoints**
-- **3 interfaces** (CLI, Web UI, VS Code)
-- **2 models** with auto-switching
+- **29 integrated systems**
+- **500+ tests** across 18 test files
+- **27,000+ lines** of Python
+- **45+ CLI commands**
+- **32 API endpoints**
+- **3 interfaces** (CLI, Web UI, VS Code extension)
+- **2 models** with auto-switching (7B fast, 32B quality)
 - **0 cloud dependencies**
+- **$0/month**
+
+---
+
+## How It Was Built
+
+I built LeanAI using Claude (Anthropic) as my coding partner. I made every architectural decision, debugged every platform issue, tested everything on my machine, and directed every phase. Claude wrote most of the code. I believe this is how software will be built going forward — human vision + AI execution.
+
+I'm sharing this openly because there's no shame in using AI to build software. 92% of developers use AI coding tools (GitHub 2025). The architecture, the vision, the debugging, the integration, and the testing — that's my work.
 
 ---
 
 ## License
 
-MIT — use it however you want.
+**AGPL-3.0** — Free to use, modify, and distribute.
+
+If you modify LeanAI and offer it as a service, you must open-source your changes and credit the original author.
+
+For commercial licensing (closed-source use), contact [@gowrishankar-infra](https://github.com/gowrishankar-infra).
 
 ---
 
