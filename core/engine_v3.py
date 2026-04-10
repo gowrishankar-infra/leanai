@@ -1,6 +1,6 @@
 """
 LeanAI Phase 3+4b Engine
-- Qwen2.5 Coder 7B (chatml) + Phi-3 (phi3) auto-detection
+- Qwen2.5 Coder 7B/32B (chatml) + auto-detection for other models
 - Sandboxed code execution with auto-fix loop
 - Only returns verified-working code
 """
