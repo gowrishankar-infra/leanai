@@ -101,10 +101,68 @@ def check_disk():
 
 
 def install_dependencies():
-    """Install Python dependencies."""
+    """Install Python dependencies — auto-creates venv if needed."""
     print("\n  Installing dependencies...")
     req_file = Path(__file__).parent / "requirements.txt"
+    project_dir = Path(__file__).parent
+    venv_dir = project_dir / ".venv"
 
+    # Check if we're already in a virtual environment
+    in_venv = hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)
+
+    if not in_venv:
+        # Try a test install first
+        test = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--dry-run", "numpy", "-q"],
+            capture_output=True, text=True
+        )
+        if "externally-managed-environment" in (test.stderr or ""):
+            # Ubuntu 23.04+ blocks system-wide pip installs — need a venv
+            print("  System Python detected (externally managed).")
+            print(f"  Creating virtual environment at {venv_dir}...")
+            try:
+                subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
+                # Determine the pip/python paths inside the venv
+                if platform.system() == "Windows":
+                    venv_python = str(venv_dir / "Scripts" / "python.exe")
+                    venv_pip = str(venv_dir / "Scripts" / "pip.exe")
+                else:
+                    venv_python = str(venv_dir / "bin" / "python")
+                    venv_pip = str(venv_dir / "bin" / "pip")
+
+                print(f"  Virtual environment created ✓")
+                print(f"  Installing dependencies inside venv...")
+
+                if req_file.exists():
+                    result = subprocess.run(
+                        [venv_pip, "install", "-r", str(req_file), "-q"],
+                        capture_output=True, text=True
+                    )
+                    if result.returncode == 0:
+                        print("  Dependencies installed ✓")
+                    else:
+                        print(f"  Some packages failed. Trying individually...")
+                        _install_individual(venv_pip)
+                else:
+                    _install_individual(venv_pip)
+
+                print(f"\n  ⚠ IMPORTANT: Activate the venv before running LeanAI:")
+                if platform.system() == "Windows":
+                    print(f"    .venv\\Scripts\\activate")
+                else:
+                    print(f"    source .venv/bin/activate")
+                print(f"    python main.py")
+                return True
+
+            except Exception as e:
+                print(f"  Could not create venv: {e}")
+                print("  Try manually:")
+                print(f"    python3 -m venv .venv")
+                print(f"    source .venv/bin/activate")
+                print(f"    pip install -r requirements.txt")
+                return False
+
+    # Normal install (already in venv or system allows pip)
     if req_file.exists():
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q"],
@@ -114,11 +172,14 @@ def install_dependencies():
             print("  Dependencies installed ✓")
             return True
         else:
-            print(f"  Error: {result.stderr[:200]}")
-            # Try installing core packages individually
-            print("  Trying individual installs...")
-    
-    # Fallback: install core packages one by one
+            print(f"  Some packages failed. Trying individually...")
+
+    _install_individual(sys.executable + " -m pip")
+    return True
+
+
+def _install_individual(pip_cmd):
+    """Install packages one by one."""
     packages = [
         "llama-cpp-python",
         "chromadb",
@@ -126,19 +187,24 @@ def install_dependencies():
         "uvicorn",
         "sentence-transformers",
         "huggingface-hub",
+        "numpy",
     ]
-    
+
     for pkg in packages:
         try:
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", pkg, "-q"],
-                capture_output=True, check=True
-            )
+            if isinstance(pip_cmd, str) and " " in pip_cmd:
+                subprocess.run(
+                    pip_cmd.split() + ["install", pkg, "-q"],
+                    capture_output=True, check=True
+                )
+            else:
+                subprocess.run(
+                    [pip_cmd, "install", pkg, "-q"],
+                    capture_output=True, check=True
+                )
             print(f"    {pkg} ✓")
         except Exception:
             print(f"    {pkg} ✗ (install manually: pip install {pkg})")
-    
-    return True
 
 
 def download_model():
@@ -265,11 +331,20 @@ def main():
     print()
 
     # Ask if they want to launch
+    venv_dir = Path(__file__).parent / ".venv"
+    if platform.system() == "Windows":
+        venv_python = str(venv_dir / "Scripts" / "python.exe")
+    else:
+        venv_python = str(venv_dir / "bin" / "python")
+
+    # Use venv python if it exists, otherwise system python
+    python_cmd = venv_python if Path(venv_python).exists() else sys.executable
+
     try:
         answer = input("  Launch LeanAI now? (y/n): ").strip().lower()
         if answer in ("y", "yes", ""):
             print()
-            os.system(f"{sys.executable} main.py")
+            os.system(f"{python_cmd} main.py")
     except (EOFError, KeyboardInterrupt):
         print("\n  Run 'python main.py' when ready.")
 

@@ -40,10 +40,11 @@ LeanAI is different:
 ```bash
 git clone https://github.com/gowrishankar-infra/leanai.git
 cd leanai
-python setup_leanai.py
+python setup_leanai.py        # Windows
+# python3 setup_leanai.py     # Linux/Mac
 ```
 
-That's it. The setup script checks your system, installs dependencies, downloads the 7B model (4.4 GB), and launches LeanAI.
+That's it. The setup script checks your system, creates a virtual environment if needed, installs dependencies, downloads the 7B model (4.4 GB), and launches LeanAI.
 
 ### Manual Setup (if you prefer)
 
