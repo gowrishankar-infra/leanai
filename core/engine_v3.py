@@ -705,7 +705,7 @@ class LeanAIEngineV3:
             system += (
                 "\n\nIMPORTANT — The user's ACTUAL project context is below. "
                 "Use it to give specific answers about THEIR code, not generic examples:\n"
-                + project_context[:1500]
+                + project_context[:3000]
             )
 
         # Inject memory context
