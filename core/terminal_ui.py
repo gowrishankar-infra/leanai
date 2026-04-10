@@ -1,6 +1,6 @@
 """
-LeanAI — Terminal UI
-Beautiful, colorful terminal output with ANSI escape codes.
+LeanAI — Terminal UI v2
+Stunning terminal output with 256-color gradients, rich Unicode, and visual polish.
 Works on Windows 10+, macOS, and Linux.
 """
 
@@ -17,7 +17,7 @@ if sys.platform == "win32":
 # ── Color codes ───────────────────────────────────────────────
 
 class C:
-    """ANSI color codes."""
+    """ANSI color codes + 256-color support."""
     RESET     = "\033[0m"
     BOLD      = "\033[1m"
     DIM       = "\033[2m"
@@ -53,31 +53,55 @@ class C:
     BG_WHITE  = "\033[47m"
     BG_GRAY   = "\033[100m"
 
+    # 256-color helpers
+    @staticmethod
+    def fg(n): return f"\033[38;5;{n}m"
+
+    @staticmethod
+    def bg(n): return f"\033[48;5;{n}m"
+
+
+# ── Accent colors (256-color palette) ─────────────────────────
+
+ACCENT    = C.fg(141)   # soft purple
+ACCENT2   = C.fg(75)    # soft blue
+ACCENT3   = C.fg(114)   # soft green
+ACCENT4   = C.fg(222)   # soft gold
+ACCENT5   = C.fg(210)   # soft coral
+DIMMED    = C.fg(245)   # gray
+BRIGHT    = C.fg(255)   # white
+
 
 # ── Banner ────────────────────────────────────────────────────
 
 def print_banner():
-    """Print the startup banner with colors."""
-    purple = C.BMAGENTA
-    blue = C.BBLUE
-    cyan = C.BCYAN
-    dim = C.DIM
+    """Print a stunning startup banner with gradient colors."""
     r = C.RESET
+    box = C.fg(141)
+    t1 = C.fg(147)
+    t2 = C.fg(141)
+    t3 = C.fg(135)
+    t4 = C.fg(99)
+    t5 = C.fg(63)
+    t6 = C.fg(69)
     b = C.BOLD
 
-    print(f"""
-{purple}  ╔══════════════════════════════════════════════════════════════╗{r}
-{purple}  ║{r}  {b}{cyan}██╗     ███████╗ █████╗ ███╗   ██╗ █████╗ ██╗{r}             {purple}║{r}
-{purple}  ║{r}  {b}{cyan}██║     ██╔════╝██╔══██╗████╗  ██║██╔══██╗██║{r}             {purple}║{r}
-{purple}  ║{r}  {b}{cyan}██║     █████╗  ███████║██╔██╗ ██║███████║██║{r}             {purple}║{r}
-{purple}  ║{r}  {b}{cyan}██║     ██╔══╝  ██╔══██║██║╚██╗██║██╔══██║██║{r}             {purple}║{r}
-{purple}  ║{r}  {b}{cyan}███████╗███████╗██║  ██║██║ ╚████║██║  ██║██║{r}             {purple}║{r}
-{purple}  ║{r}  {b}{cyan}╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝{r}             {purple}║{r}
-{purple}  ║{r}                                                            {purple}║{r}
-{purple}  ║{r}  {dim}Project-Aware AI Coding System — 100% Local & Private{r}     {purple}║{r}
-{purple}  ║{r}  {dim}Brain · Git · TDD · Memory · Swarm · Fine-Tune{r}           {purple}║{r}
-{purple}  ╚══════════════════════════════════════════════════════════════╝{r}
-""")
+    print()
+    print(f"  {box}╔{'═' * 62}╗{r}")
+    print(f"  {box}║{r}                                                                {box}║{r}")
+    print(f"  {box}║{r}   {b}{t1}██╗{r}     {b}{t1}███████╗{r} {b}{t2}█████╗{r} {b}{t2}███╗   ██╗{r} {b}{t3}█████╗{r} {b}{t3}██╗{r}          {box}║{r}")
+    print(f"  {box}║{r}   {b}{t1}██║{r}     {b}{t1}██╔════╝{r}{b}{t2}██╔══██╗{r}{b}{t2}████╗  ██║{r}{b}{t3}██╔══██╗{r}{b}{t3}██║{r}          {box}║{r}")
+    print(f"  {box}║{r}   {b}{t2}██║{r}     {b}{t2}█████╗{r}  {b}{t3}███████║{r}{b}{t3}██╔██╗ ██║{r}{b}{t4}███████║{r}{b}{t4}██║{r}          {box}║{r}")
+    print(f"  {box}║{r}   {b}{t3}██║{r}     {b}{t3}██╔══╝{r}  {b}{t4}██╔══██║{r}{b}{t4}██║╚██╗██║{r}{b}{t5}██╔══██║{r}{b}{t5}██║{r}          {box}║{r}")
+    print(f"  {box}║{r}   {b}{t4}███████╗{r}{b}{t4}███████╗{r}{b}{t5}██║  ██║{r}{b}{t5}██║ ╚████║{r}{b}{t6}██║  ██║{r}{b}{t6}██║{r}          {box}║{r}")
+    print(f"  {box}║{r}   {b}{t5}╚══════╝{r}{b}{t5}╚══════╝{r}{b}{t6}╚═╝  ╚═╝{r}{b}{t6}╚═╝  ╚═══╝{r}{b}{t6}╚═╝  ╚═╝{r}{b}{t6}╚═╝{r}          {box}║{r}")
+    print(f"  {box}║{r}                                                                {box}║{r}")
+    print(f"  {box}║{r}   {ACCENT}◆{r} {BRIGHT}Project-Aware AI Coding System{r}                           {box}║{r}")
+    print(f"  {box}║{r}   {DIMMED}100% Local  ·  100% Private  ·  $0 Forever{r}                 {box}║{r}")
+    print(f"  {box}║{r}                                                                {box}║{r}")
+    print(f"  {box}║{r}   {C.fg(114)}⧫ Brain{r}  {C.fg(75)}⧫ Git{r}  {C.fg(222)}⧫ TDD{r}  {C.fg(210)}⧫ Memory{r}  {C.fg(141)}⧫ Swarm{r}  {C.fg(69)}⧫ GPU{r}      {box}║{r}")
+    print(f"  {box}╚{'═' * 62}╝{r}")
+    print()
 
 
 # ── Status display ────────────────────────────────────────────
@@ -85,57 +109,47 @@ def print_banner():
 def print_status(model_name, model_mode, memory_count, mem_backend,
                  profile_count, training_pairs, session_count,
                  exchange_count, git_branch, finetune_pairs):
-    """Print system status with colors."""
-    g = C.BGREEN
-    b = C.BBLUE
-    c = C.BCYAN
-    y = C.BYELLOW
-    m = C.BMAGENTA
-    d = C.DIM
+    """Print system status with icons and colors."""
     r = C.RESET
-    w = C.BWHITE
 
-    print(f"  {d}{'─' * 58}{r}")
-    print(f"  {b}Model{r}    : {w}{model_name}{r} {d}| mode: {model_mode}{r}")
-    print(f"  {c}Memory{r}   : {w}{memory_count}{r} episodes {d}| {mem_backend}{r}")
-    print(f"  {m}Profile{r}  : {w}{profile_count}{r} fields")
-    print(f"  {y}Training{r} : {w}{training_pairs}{r} pairs")
-    print(f"  {g}Sessions{r} : {w}{session_count}{r} past {d}| {exchange_count} exchanges{r}")
-    print(f"  {b}Git{r}      : {g}active{r} {d}| branch: {git_branch}{r}")
-    print(f"  {m}FineTune{r} : {w}{finetune_pairs}{r} training pairs")
-    print(f"  {d}{'─' * 58}{r}")
+    print(f"  {DIMMED}{'─' * 62}{r}")
+    print(f"  {C.fg(75)}⚙{r}  {DIMMED}Model{r}     {BRIGHT}{model_name}{r} {DIMMED}│ mode: {model_mode}{r}")
+    print(f"  {C.fg(114)}◉{r}  {DIMMED}Memory{r}    {BRIGHT}{memory_count}{r} episodes {DIMMED}│ {mem_backend}{r}")
+    print(f"  {C.fg(222)}◎{r}  {DIMMED}Profile{r}   {BRIGHT}{profile_count}{r} fields")
+    print(f"  {C.fg(210)}◈{r}  {DIMMED}Training{r}  {BRIGHT}{training_pairs}{r} pairs")
+    print(f"  {C.fg(141)}◆{r}  {DIMMED}Sessions{r}  {BRIGHT}{session_count}{r} past {DIMMED}│ {exchange_count} exchanges{r}")
+    print(f"  {C.fg(69)}◇{r}  {DIMMED}Git{r}       {C.fg(114)}active{r} {DIMMED}│ branch: {git_branch}{r}")
+    print(f"  {C.fg(135)}◈{r}  {DIMMED}FineTune{r}  {BRIGHT}{finetune_pairs}{r} training pairs")
+    print(f"  {DIMMED}{'─' * 62}{r}")
     print()
 
 
 # ── Commands help ─────────────────────────────────────────────
 
 def print_commands():
-    """Print available commands with colors."""
-    h = C.BBLUE
-    c = C.CYAN
-    d = C.DIM
+    """Print available commands with icons and colors."""
     r = C.RESET
 
-    print(f"  {h}Commands:{r}")
-    print(f"    {c}Chat{r}     : just type {d}| /swarm <q> | /run <code>{r}")
-    print(f"    {c}Build{r}    : /build <task> {d}| /tdd <tests> | /tdd-desc <desc>{r}")
-    print(f"    {c}Reason{r}   : /reason <q> {d}| /plan <task> | /decompose <problem>{r}")
-    print(f"    {c}Write{r}    : /write <doc> {d}| /essay <topic> | /report <topic>{r}")
-    print(f"    {c}Project{r}  : /brain <path> {d}| /describe <file> | /deps <file>{r}")
-    print(f"    {c}Git{r}      : /git activity {d}| /git hotspots | /git history <file>{r}")
-    print(f"    {c}Verify{r}   : /fuzz <code> {d}| /bisect <bug>{r}")
-    print(f"    {c}Complete{r} : /complete <prefix>")
-    print(f"    {c}Track{r}    : /evolution narrative {d}| insights | predict{r}")
-    print(f"    {c}Memory{r}   : /remember <fact> {d}| /profile | /sessions{r}")
-    print(f"    {c}System{r}   : /model <cmd> {d}| /speed | /status | /help | /quit{r}")
+    print(f"  {ACCENT}Commands{r}")
+    print(f"    {C.fg(75)}▸{r} {C.fg(75)}Chat{r}      just type {DIMMED}│ /swarm <q> │ /run <code>{r}")
+    print(f"    {C.fg(114)}▸{r} {C.fg(114)}Build{r}     /build <task> {DIMMED}│ /tdd <tests> │ /tdd-desc <desc>{r}")
+    print(f"    {C.fg(222)}▸{r} {C.fg(222)}Reason{r}    /reason <q> {DIMMED}│ /plan <task> │ /decompose <problem>{r}")
+    print(f"    {C.fg(210)}▸{r} {C.fg(210)}Write{r}     /write <doc> {DIMMED}│ /essay <topic> │ /report <topic>{r}")
+    print(f"    {C.fg(141)}▸{r} {C.fg(141)}Project{r}   /brain <path> {DIMMED}│ /describe <file> │ /deps <file>{r}")
+    print(f"    {C.fg(69)}▸{r} {C.fg(69)}Git{r}       /git activity {DIMMED}│ /git hotspots │ /git history <file>{r}")
+    print(f"    {C.fg(135)}▸{r} {C.fg(135)}Verify{r}    /fuzz <code> {DIMMED}│ /bisect <bug>{r}")
+    print(f"    {C.fg(81)}▸{r} {C.fg(81)}Complete{r}  /complete <prefix>")
+    print(f"    {C.fg(147)}▸{r} {C.fg(147)}Track{r}     /evolution narrative {DIMMED}│ insights │ predict{r}")
+    print(f"    {C.fg(114)}▸{r} {C.fg(114)}Memory{r}    /remember <fact> {DIMMED}│ /profile │ /sessions{r}")
+    print(f"    {DIMMED}▸{r} {DIMMED}System{r}    /model <cmd> {DIMMED}│ /speed │ /status │ /help │ /quit{r}")
     print()
 
 
 # ── Input prompt ──────────────────────────────────────────────
 
 def get_prompt():
-    """Return the styled input prompt."""
-    return f"{C.BMAGENTA}  ▶{C.RESET} "
+    """Return a styled input prompt with gradient arrow."""
+    return f"\n  {C.fg(141)}❯{C.fg(135)}❯{C.fg(99)}❯{C.RESET} "
 
 
 # ── Response formatting ──────────────────────────────────────
@@ -146,6 +160,7 @@ def format_response(text):
     result = []
     in_code = False
     code_lang = ""
+    line_num = 0
 
     for line in lines:
         # Code block start
@@ -154,15 +169,21 @@ def format_response(text):
                 in_code = True
                 code_lang = line.strip().replace("```", "").strip()
                 lang_display = code_lang if code_lang else "code"
-                result.append(f"  {C.DIM}┌─ {lang_display} {'─' * (40 - len(lang_display))}┐{C.RESET}")
+                line_num = 0
+                # Styled code block header
+                header = f" {lang_display} "
+                pad = 50 - len(header)
+                result.append(f"  {C.fg(238)}╭─{C.fg(75)}{C.BOLD}{header}{C.RESET}{C.fg(238)}{'─' * pad}╮{C.RESET}")
             else:
                 in_code = False
-                result.append(f"  {C.DIM}└{'─' * 44}┘{C.RESET}")
+                result.append(f"  {C.fg(238)}╰{'─' * 52}╯{C.RESET}")
             continue
 
         if in_code:
+            line_num += 1
             highlighted = highlight_code_line(line, code_lang)
-            result.append(f"  {C.DIM}│{C.RESET} {highlighted}")
+            num_str = f"{C.fg(240)}{line_num:3}{C.RESET}"
+            result.append(f"  {C.fg(238)}│{C.RESET} {num_str} {C.fg(238)}│{C.RESET} {highlighted}")
         else:
             # Markdown formatting
             formatted = format_markdown_line(line)
@@ -176,33 +197,80 @@ def highlight_code_line(line, lang=""):
     if not line.strip():
         return line
 
-    # Python / generic highlighting
+    # Comments are safe for all languages
+    if re.match(r"^\s*#", line) or re.match(r"^\s*//", line):
+        return f"{C.fg(242)}{line}{C.RESET}"
+
+    # For non-Python languages, only highlight comments and strings
+    # (full regex highlighting corrupts ANSI codes across languages)
+    py_langs = ["python", "py", ""]
+    if lang.lower() not in py_langs:
+        highlighted = line
+        # Strings only (safe, doesn't conflict)
+        highlighted = re.sub(r'("(?:[^"\\]|\\.)*")', f"{C.fg(114)}\\1{C.RESET}", highlighted)
+        highlighted = re.sub(r"('(?:[^'\\]|\\.)*')", f"{C.fg(114)}\\1{C.RESET}", highlighted)
+        # Keywords for the specific language
+        if lang.lower() in ["go", "golang"]:
+            kw = r"\b(func|package|import|return|if|else|for|range|var|const|type|struct|interface|defer|go|select|case|switch|chan|map|make|append|len|cap|nil|true|false|err)\b"
+        elif lang.lower() in ["javascript", "js", "typescript", "ts"]:
+            kw = r"\b(function|const|let|var|return|if|else|for|while|class|new|this|async|await|import|export|from|try|catch|throw|null|undefined|true|false)\b"
+        elif lang.lower() in ["java", "kotlin"]:
+            kw = r"\b(public|private|protected|class|interface|extends|implements|return|if|else|for|while|new|this|super|static|final|void|int|String|boolean|null|true|false|throws|try|catch)\b"
+        elif lang.lower() in ["rust", "rs"]:
+            kw = r"\b(fn|let|mut|pub|use|mod|impl|trait|struct|enum|match|if|else|for|while|loop|return|self|Self|true|false|None|Some|Ok|Err|unsafe|async|await|where)\b"
+        elif lang.lower() in ["c", "cpp", "c++"]:
+            kw = r"\b(int|char|float|double|void|return|if|else|for|while|do|switch|case|break|continue|struct|typedef|include|define|NULL|true|false|class|public|private|protected|virtual|new|delete|const|static|extern)\b"
+        elif lang.lower() in ["sql"]:
+            kw = r"\b(SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|JOIN|LEFT|RIGHT|INNER|ON|AND|OR|NOT|IN|NULL|IS|AS|ORDER|BY|GROUP|HAVING|LIMIT|INTO|VALUES|SET|TABLE|INDEX)\b"
+        else:
+            kw = r"\b(def|class|import|return|if|else|for|while|func|function|var|const|let|type|struct|new|this|null|nil|true|false)\b"
+        highlighted = re.sub(kw, f"{C.fg(141)}\\1{C.RESET}", highlighted)
+        # Numbers
+        highlighted = re.sub(r"\b(\d+\.?\d*)\b", f"{C.fg(222)}\\1{C.RESET}", highlighted)
+        return highlighted
+
+    # Full Python highlighting
     highlighted = line
 
-    # Comments
-    if re.match(r"^\s*#", line):
-        return f"{C.DIM}{C.GREEN}{line}{C.RESET}"
+    # Keywords (purple)
+    keywords = (
+        r"\b(def|class|import|from|return|if|elif|else|for|while|try|except|"
+        r"finally|with|as|yield|async|await|raise|pass|break|continue|lambda|"
+        r"and|or|not|in|is)\b"
+    )
+    highlighted = re.sub(keywords, f"{C.fg(141)}\\1{C.RESET}", highlighted)
 
-    # Keywords
-    keywords = r"\b(def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|as|yield|async|await|raise|pass|break|continue|lambda|and|or|not|in|is)\b"
-    highlighted = re.sub(keywords, f"{C.BMAGENTA}\\1{C.RESET}", highlighted)
+    # Builtins (cyan)
+    builtins = (
+        r"\b(print|len|range|str|int|float|list|dict|set|type|isinstance|"
+        r"hasattr|getattr|open|super|enumerate|zip|map|filter|sorted|"
+        r"True|False|None|self)\b"
+    )
+    highlighted = re.sub(builtins, f"{C.fg(81)}\\1{C.RESET}", highlighted)
 
-    # Builtins
-    builtins = r"\b(print|len|range|str|int|float|list|dict|set|type|True|False|None|self)\b"
-    highlighted = re.sub(builtins, f"{C.BCYAN}\\1{C.RESET}", highlighted)
+    # Strings (green)
+    highlighted = re.sub(r'("(?:[^"\\]|\\.)*")', f"{C.fg(114)}\\1{C.RESET}", highlighted)
+    highlighted = re.sub(r"('(?:[^'\\]|\\.)*')", f"{C.fg(114)}\\1{C.RESET}", highlighted)
 
-    # Strings (simple detection)
-    highlighted = re.sub(r'(\"[^\"]*\")', f"{C.BGREEN}\\1{C.RESET}", highlighted)
-    highlighted = re.sub(r"(\'[^\']*\')", f"{C.BGREEN}\\1{C.RESET}", highlighted)
+    # Numbers (gold)
+    highlighted = re.sub(r"\b(\d+\.?\d*)\b", f"{C.fg(222)}\\1{C.RESET}", highlighted)
 
-    # Numbers
-    highlighted = re.sub(r"\b(\d+\.?\d*)\b", f"{C.BYELLOW}\\1{C.RESET}", highlighted)
+    # Function definitions (bold blue name)
+    highlighted = re.sub(
+        r"(def\s+)(\w+)",
+        f"{C.fg(141)}\\1{C.RESET}{C.fg(75)}{C.BOLD}\\2{C.RESET}",
+        highlighted,
+    )
 
-    # Function definitions
-    highlighted = re.sub(r"(def\s+)(\w+)", f"{C.BMAGENTA}\\1{C.RESET}{C.BBLUE}\\2{C.RESET}", highlighted)
+    # Class definitions (bold gold name)
+    highlighted = re.sub(
+        r"(class\s+)(\w+)",
+        f"{C.fg(141)}\\1{C.RESET}{C.fg(222)}{C.BOLD}\\2{C.RESET}",
+        highlighted,
+    )
 
-    # Class definitions
-    highlighted = re.sub(r"(class\s+)(\w+)", f"{C.BMAGENTA}\\1{C.RESET}{C.BYELLOW}\\2{C.RESET}", highlighted)
+    # Decorators (coral)
+    highlighted = re.sub(r"^(\s*@\w+)", f"{C.fg(210)}\\1{C.RESET}", highlighted)
 
     return highlighted
 
@@ -212,31 +280,33 @@ def format_markdown_line(line):
     stripped = line.strip()
 
     # Headers
+    if stripped.startswith("#### "):
+        return f"    {C.fg(81)}◇{C.RESET} {C.fg(81)}{stripped[5:]}{C.RESET}"
     if stripped.startswith("### "):
-        return f"{C.BOLD}{C.BCYAN}{stripped[4:]}{C.RESET}"
+        return f"\n  {C.fg(75)}{C.BOLD}▸ {stripped[4:]}{C.RESET}"
     if stripped.startswith("## "):
-        return f"{C.BOLD}{C.BBLUE}{stripped[3:]}{C.RESET}"
+        return f"\n  {C.fg(141)}{C.BOLD}■ {stripped[3:]}{C.RESET}"
     if stripped.startswith("# "):
-        return f"{C.BOLD}{C.BMAGENTA}{stripped[2:]}{C.RESET}"
+        return f"\n  {C.fg(147)}{C.BOLD}█ {stripped[2:]}{C.RESET}"
 
     # Bullet points
     if stripped.startswith("- ") or stripped.startswith("* "):
-        return f"  {C.BCYAN}•{C.RESET} {stripped[2:]}"
+        return f"    {C.fg(141)}●{C.RESET} {stripped[2:]}"
 
     # Numbered lists
     m = re.match(r"^(\d+)\. (.+)", stripped)
     if m:
-        return f"  {C.BCYAN}{m.group(1)}.{C.RESET} {m.group(2)}"
+        return f"    {C.fg(75)}{m.group(1)}.{C.RESET} {m.group(2)}"
 
     # Blockquotes
     if stripped.startswith("> "):
-        return f"  {C.DIM}{C.YELLOW}▌{C.RESET} {C.ITALIC}{stripped[2:]}{C.RESET}"
+        return f"    {C.fg(222)}▐{C.RESET} {C.ITALIC}{C.fg(250)}{stripped[2:]}{C.RESET}"
 
     # Bold
-    line = re.sub(r"\*\*(.+?)\*\*", f"{C.BOLD}\\1{C.RESET}", line)
+    line = re.sub(r"\*\*(.+?)\*\*", f"{C.BOLD}{BRIGHT}\\1{C.RESET}", line)
 
     # Inline code
-    line = re.sub(r"`([^`]+)`", f"{C.BG_GRAY}{C.BWHITE} \\1 {C.RESET}", line)
+    line = re.sub(r"`([^`]+)`", f"{C.fg(81)}{C.bg(236)} \\1 {C.RESET}", line)
 
     return line
 
@@ -244,121 +314,146 @@ def format_markdown_line(line):
 # ── Confidence bar ────────────────────────────────────────────
 
 def format_confidence(confidence, conf_label):
-    """Format confidence bar with colors."""
+    """Format confidence bar with gradient colors."""
+    r = C.RESET
+
     if confidence >= 90:
-        color = C.BGREEN
+        colors = [C.fg(46), C.fg(82), C.fg(118), C.fg(154)]
+        label_color = C.fg(82)
     elif confidence >= 70:
-        color = C.BCYAN
+        colors = [C.fg(75), C.fg(81), C.fg(87), C.fg(123)]
+        label_color = C.fg(81)
     elif confidence >= 50:
-        color = C.BYELLOW
+        colors = [C.fg(220), C.fg(221), C.fg(222), C.fg(228)]
+        label_color = C.fg(222)
     else:
-        color = C.BRED
+        colors = [C.fg(196), C.fg(203), C.fg(210), C.fg(217)]
+        label_color = C.fg(210)
 
     filled = int(confidence / 5)
-    bar = f"{color}{'█' * filled}{C.DIM}{'░' * (20 - filled)}{C.RESET}"
-    return f"  {C.DIM}Confidence{C.RESET}  [{bar}] {color}{confidence:.0f}%{C.RESET}  {conf_label}"
+    bar_chars = []
+    for i in range(20):
+        if i < filled:
+            color = colors[min(i // 5, len(colors) - 1)]
+            bar_chars.append(f"{color}━{r}")
+        else:
+            bar_chars.append(f"{C.fg(238)}╌{r}")
+
+    bar = "".join(bar_chars)
+    return f"  {DIMMED}Confidence{r}  [{bar}] {label_color}{C.BOLD}{confidence:.0f}%{r}  {label_color}{conf_label}{r}"
 
 
 # ── Meta info ─────────────────────────────────────────────────
 
 def format_meta(tier, latency_str, from_mem=False, verified=False,
                 mem_active=False, code_verified=False, enriched=False):
-    """Format metadata line with colors."""
-    parts = [f"{C.DIM}Tier:{C.RESET} {C.BBLUE}{tier}{C.RESET}"]
-    parts.append(f"{C.DIM}Latency:{C.RESET} {C.BWHITE}{latency_str}{C.RESET}")
+    """Format metadata line with icons and colors."""
+    r = C.RESET
+    parts = []
+
+    tier_icons = {"small": "⚡", "medium": "◆", "full": "★", "unknown": "○"}
+    icon = tier_icons.get(tier, "○")
+    parts.append(f"{C.fg(75)}{icon} {tier}{r}")
+    parts.append(f"{DIMMED}⏱ {r}{BRIGHT}{latency_str}{r}")
 
     if from_mem:
-        parts.append(f"{C.BGREEN}from memory{C.RESET}")
+        parts.append(f"{C.fg(114)}◉ memory{r}")
     if verified:
-        parts.append(f"{C.BGREEN}verified{C.RESET}")
+        parts.append(f"{C.fg(82)}✓ verified{r}")
     if mem_active:
-        parts.append(f"{C.BCYAN}memory active{C.RESET}")
+        parts.append(f"{C.fg(141)}◈ context{r}")
     if code_verified:
-        parts.append(f"{C.BGREEN}code verified{C.RESET}")
+        parts.append(f"{C.fg(82)}✓ code ok{r}")
     if enriched:
-        parts.append(f"{C.BMAGENTA}context enriched{C.RESET}")
+        parts.append(f"{C.fg(222)}⧫ enriched{r}")
 
-    return "  " + f" {C.DIM}·{C.RESET} ".join(parts)
+    return "  " + f" {DIMMED}·{r} ".join(parts)
 
 
 # ── Separator ─────────────────────────────────────────────────
 
 def separator():
-    """Print a styled separator."""
-    print(f"  {C.DIM}{'─' * 58}{C.RESET}")
+    """Print a styled gradient separator."""
+    r = C.RESET
+    colors_sep = [236, 238, 240, 242, 244, 246, 244, 242, 240, 238, 236]
+    seg_len = 62 // len(colors_sep)
+    line = ""
+    for c in colors_sep:
+        line += f"{C.fg(c)}{'─' * seg_len}"
+    print(f"  {line}{r}")
 
 
 # ── Section headers ───────────────────────────────────────────
 
-def section_header(title, icon=""):
+def section_header(title, icon="◆"):
     """Print a section header."""
-    print(f"\n  {C.BBLUE}{icon}{C.RESET} {C.BOLD}{title}{C.RESET}")
-    print(f"  {C.DIM}{'─' * 58}{C.RESET}")
+    r = C.RESET
+    print(f"\n  {C.fg(141)}{icon}{r} {C.BOLD}{BRIGHT}{title}{r}")
+    separator()
 
 
 # ── Code execution result ────────────────────────────────────
 
 def format_code_result(passed, output="", error=""):
-    """Format code execution result."""
+    """Format code execution result with icons."""
+    r = C.RESET
     if passed:
-        print(f"\n  {C.BGREEN}✓ Code: PASSED{C.RESET}")
+        print(f"\n  {C.fg(82)}✓ Code verified{r} {DIMMED}— runs successfully{r}")
         if output:
             for line in output.strip().split("\n")[:10]:
-                print(f"    {C.DIM}{line}{C.RESET}")
+                print(f"    {C.fg(242)}{line}{r}")
     else:
         if error:
-            print(f"\n  {C.BRED}✗ Code: {error[:120]}{C.RESET}")
+            print(f"\n  {C.fg(210)}✗ Code issue:{r} {C.fg(250)}{error[:120]}{r}")
         else:
-            print(f"\n  {C.BRED}✗ Code: execution error{C.RESET}")
+            print(f"\n  {C.fg(210)}✗ Code: execution error{r}")
 
 
 # ── Brain scan result ────────────────────────────────────────
 
 def format_brain_scan(result):
-    """Format brain scan result beautifully."""
-    g = C.BGREEN
-    b = C.BBLUE
-    c = C.BCYAN
-    y = C.BYELLOW
-    m = C.BMAGENTA
-    d = C.DIM
+    """Format brain scan result."""
     r = C.RESET
-    w = C.BWHITE
-
-    print(f"\n  {b}Project:{r} {w}{result.get('project', 'unknown')}{r}")
-    print(f"  {d}Path:{r}    {result.get('path', '')}")
-    print(f"  {d}{'─' * 42}{r}")
-    print(f"  {c}Files:{r}     {w}{result.get('files_found', 0)}{r} indexed")
-    print(f"  {g}Functions:{r} {w}{result.get('graph', {}).get('functions', 0)}{r}")
-    print(f"  {m}Classes:{r}   {w}{result.get('graph', {}).get('classes', 0)}{r}")
-    print(f"  {y}Edges:{r}     {w}{result.get('graph', {}).get('edges', 0)}{r}")
-    print(f"  {d}Lines:{r}     {result.get('total_lines', 0):,}")
-    print(f"  {d}Scan time:{r} {result.get('scan_time_ms', 0):.0f}ms")
+    print(f"\n  {C.fg(141)}◆{r} {C.BOLD}Project:{r} {BRIGHT}{result.get('project', 'unknown')}{r}")
+    print(f"  {DIMMED}  Path:    {result.get('path', '')}{r}")
+    separator()
+    print(f"  {C.fg(75)}  Files:{r}     {BRIGHT}{result.get('files_found', 0)}{r} indexed")
+    print(f"  {C.fg(114)}  Functions:{r} {BRIGHT}{result.get('graph', {}).get('functions', 0)}{r}")
+    print(f"  {C.fg(222)}  Classes:{r}   {BRIGHT}{result.get('graph', {}).get('classes', 0)}{r}")
+    print(f"  {C.fg(210)}  Edges:{r}     {BRIGHT}{result.get('graph', {}).get('edges', 0)}{r}")
+    print(f"  {DIMMED}  Lines:     {result.get('total_lines', 0):,}{r}")
+    print(f"  {DIMMED}  Scan time: {result.get('scan_time_ms', 0):.0f}ms{r}")
 
 
 # ── Autocomplete result ──────────────────────────────────────
 
 def format_completions(prefix, results, elapsed_ms, stats):
-    """Format autocomplete results."""
+    """Format autocomplete results with icons."""
+    r = C.RESET
     if results:
-        print(f"\n  {C.BBLUE}Completions for{C.RESET} '{C.BWHITE}{prefix}{C.RESET}' {C.DIM}({elapsed_ms:.1f}ms){C.RESET}")
-        for r in results:
-            icon = {"function": f"{C.BCYAN}ƒ{C.RESET}", "class": f"{C.BYELLOW}◆{C.RESET}",
-                    "keyword": f"{C.BMAGENTA}⚡{C.RESET}", "snippet": f"{C.BGREEN}✂{C.RESET}"}.get(r.kind, "·")
-            print(f"    {icon} {C.BWHITE}{r.label:<40}{C.RESET} {C.DIM}{r.detail}{C.RESET}")
+        print(f"\n  {C.fg(75)}Completions for{r} '{C.BOLD}{BRIGHT}{prefix}{r}' {DIMMED}({elapsed_ms:.1f}ms){r}")
+        for item in results:
+            icon = {
+                "function": f"{C.fg(81)}ƒ{r}",
+                "class": f"{C.fg(222)}◆{r}",
+                "keyword": f"{C.fg(141)}⚡{r}",
+                "snippet": f"{C.fg(114)}✂{r}",
+            }.get(item.kind, f"{DIMMED}·{r}")
+            print(f"    {icon} {BRIGHT}{item.label:<40}{r} {DIMMED}{item.detail}{r}")
     else:
-        print(f"\n  {C.DIM}No completions for '{prefix}'{C.RESET}")
-    print(f"  {C.DIM}Index: {stats['functions_indexed']} functions, {stats['classes_indexed']} classes{C.RESET}")
+        print(f"\n  {DIMMED}No completions for '{prefix}'{r}")
+    print(f"  {DIMMED}Index: {stats['functions_indexed']} functions, {stats['classes_indexed']} classes{r}")
 
 
 # ── Loading indicator ─────────────────────────────────────────
 
 def print_thinking(model_name=""):
     """Print thinking indicator."""
+    r = C.RESET
     if model_name:
-        print(f"\n  {C.DIM}⟳ Thinking ({model_name})...{C.RESET}", end="", flush=True)
+        print(f"\n  {C.fg(141)}◌{r} {DIMMED}Thinking ({model_name})...{r}", end="", flush=True)
     else:
-        print(f"\n  {C.DIM}⟳ Thinking...{C.RESET}", end="", flush=True)
+        print(f"\n  {C.fg(141)}◌{r} {DIMMED}Thinking...{r}", end="", flush=True)
 
 
 def clear_thinking():
@@ -369,6 +464,7 @@ def clear_thinking():
 # ── Response header ───────────────────────────────────────────
 
 def print_response_header():
-    """Print the response header."""
-    print(f"\n  {C.BMAGENTA}LeanAI{C.RESET}")
-    print(f"  {C.DIM}{'─' * 58}{C.RESET}")
+    """Print the response header with gradient name."""
+    r = C.RESET
+    print(f"\n  {C.fg(147)}{C.BOLD}L{C.fg(141)}e{C.fg(135)}a{C.fg(99)}n{C.fg(75)}A{C.fg(69)}I{r}")
+    separator()
