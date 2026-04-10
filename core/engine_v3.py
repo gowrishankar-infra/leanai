@@ -82,13 +82,58 @@ def _optimal_threads(model_path: str) -> int:
     return min(cpu, 8)
 
 
+def _looks_like_python(code: str) -> bool:
+    """Check if code looks like Python (not YAML, JSON, bash, SQL, etc)."""
+    first_lines = code.strip().split("\n")[:5]
+    first = first_lines[0].strip() if first_lines else ""
+
+    # Definitely NOT Python
+    non_python_indicators = [
+        "trigger:", "pool:", "vmImage:", "steps:",        # YAML/Azure DevOps
+        "apiVersion:", "kind:", "metadata:",              # Kubernetes YAML
+        "FROM ", "RUN ", "COPY ", "CMD ", "ENTRYPOINT",   # Dockerfile
+        "SELECT ", "INSERT ", "CREATE TABLE", "ALTER ",   # SQL
+        "#!/bin/bash", "#!/bin/sh", "echo ", "sudo ",     # bash
+        '{"', "'{",                                        # JSON
+        "<html", "<!DOCTYPE", "<div", "<script",          # HTML
+        "const ", "let ", "var ", "function ",             # JavaScript
+        "package main", "func main", "import (",          # Go
+        "public class", "public static void",             # Java
+        "fn main", "use std",                             # Rust
+    ]
+    code_upper = code[:500]
+    for indicator in non_python_indicators:
+        if indicator in code_upper:
+            return False
+
+    # Looks like YAML (key: value pattern on most lines)
+    yaml_lines = sum(1 for l in first_lines if re.match(r"^\s*\w+:", l))
+    if yaml_lines >= 3:
+        return False
+
+    # Probably Python
+    python_indicators = ["def ", "class ", "import ", "from ", "print(", "if __name__",
+                         "return ", "self.", "elif ", "except ", "lambda "]
+    for indicator in python_indicators:
+        if indicator in code:
+            return True
+
+    # If we can parse it as Python AST, it's Python
+    try:
+        import ast
+        ast.parse(code)
+        return True
+    except SyntaxError:
+        return False
+
+
 def _extract_code_blocks(text: str) -> list:
-    """Extract code blocks from a response. Handles incomplete/unclosed blocks."""
+    """Extract Python code blocks from a response. Skips non-Python blocks."""
     blocks = []
 
-    # 1. Try standard fenced code blocks: ```python ... ```
-    pattern = re.compile(r"```(?:python|py|javascript|js|bash|sh)?\n?(.*?)```", re.DOTALL)
-    for m in pattern.finditer(text):
+    # 1. Try explicitly tagged Python blocks: ```python ... ```
+    py_pattern = re.compile(r"```(?:python|py)\n?(.*?)```", re.DOTALL)
+    for m in py_pattern.finditer(text):
         code = m.group(1).strip()
         if code and len(code) > 5:
             blocks.append(code)
@@ -96,11 +141,24 @@ def _extract_code_blocks(text: str) -> list:
     if blocks:
         return [_sanitize_code(b) for b in blocks]
 
-    # 2. Handle UNCLOSED code blocks (model truncated mid-response)
+    # 2. Try UNTAGGED code blocks (no language specified) — assume Python
+    #    But skip if it looks like YAML, JSON, bash, SQL, etc.
+    untagged = re.compile(r"```\n?(.*?)```", re.DOTALL)
+    for m in untagged.finditer(text):
+        code = m.group(1).strip()
+        if code and len(code) > 5 and _looks_like_python(code):
+            blocks.append(code)
+
+    if blocks:
+        return [_sanitize_code(b) for b in blocks]
+
+    # 3. Handle UNCLOSED code blocks (model truncated mid-response)
     unclosed = re.compile(r"```(?:python|py)?\n(.*)", re.DOTALL)
     m = unclosed.search(text)
     if m:
         code = m.group(1).strip()
+        if not _looks_like_python(code):
+            return []
         lines = code.split("\n")
         code_lines = []
         for line in lines:
@@ -120,7 +178,7 @@ def _extract_code_blocks(text: str) -> list:
     if blocks:
         return blocks
 
-    # 3. Last resort: if the ENTIRE response looks like pure code (no prose)
+    # 4. Last resort: if the ENTIRE response looks like pure Python code
     lines = text.strip().split("\n")
     has_code_keywords = any(kw in text for kw in ["def ", "class ", "import "])
     prose_lines = sum(1 for l in lines if l.strip() and l.strip()[0].isupper()
