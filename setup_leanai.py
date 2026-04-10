@@ -1,298 +1,277 @@
+#!/usr/bin/env python3
 """
 LeanAI — One-Command Setup
-Run: python setup_leanai.py
+Checks system, installs dependencies, downloads model, and launches LeanAI.
 
-This script:
-  1. Checks Python version
-  2. Installs all dependencies
-  3. Downloads the Qwen2.5 Coder 7B model (4.4 GB)
-  4. Creates necessary directories
-  5. Launches LeanAI
-
-That's it. One command, fully working.
+Usage:
+    python setup_leanai.py
 """
 
 import os
 import sys
 import subprocess
-import shutil
-import time
+import platform
 from pathlib import Path
 
 
-# ── Config ────────────────────────────────────────────────────
-
-MODEL_DIR = Path.home() / ".leanai" / "models"
-MODEL_NAME = "qwen25-coder-7b-q4.gguf"
-MODEL_URL = "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
-MODEL_SIZE_GB = 4.4
-
-REQUIRED_PYTHON = (3, 9)
-REQUIRED_RAM_GB = 8
-
-
-def print_banner():
+def print_header():
     print()
-    print("╔══════════════════════════════════════════════════════════╗")
-    print("║              LeanAI — One-Command Setup                 ║")
-    print("║     Local AI that understands your entire codebase      ║")
-    print("╚══════════════════════════════════════════════════════════╝")
+    print("=" * 60)
+    print("  LeanAI Setup")
+    print("  Project-Aware AI Coding System")
+    print("=" * 60)
     print()
-
-
-def print_step(num, total, msg):
-    print(f"  [{num}/{total}] {msg}", flush=True)
-
-
-def print_ok(msg):
-    print(f"       ✓ {msg}")
-
-
-def print_warn(msg):
-    print(f"       ⚠ {msg}")
-
-
-def print_fail(msg):
-    print(f"       ✗ {msg}")
 
 
 def check_python():
     """Check Python version."""
     v = sys.version_info
-    if (v.major, v.minor) < REQUIRED_PYTHON:
-        print_fail(f"Python {REQUIRED_PYTHON[0]}.{REQUIRED_PYTHON[1]}+ required. You have {v.major}.{v.minor}.")
-        print(f"\n       Download Python: https://www.python.org/downloads/")
-        sys.exit(1)
-    print_ok(f"Python {v.major}.{v.minor}.{v.micro}")
-
-
-def check_git():
-    """Check git is installed."""
-    if shutil.which("git"):
-        print_ok("Git found")
+    print(f"  Python: {v.major}.{v.minor}.{v.micro}", end="")
+    if v.major == 3 and v.minor >= 10:
+        print(" ✓")
+        return True
     else:
-        print_warn("Git not found — git features will be limited")
-        print(f"       Download Git: https://git-scm.com/downloads")
+        print(" ✗ (need 3.10+)")
+        return False
+
+
+def check_pip():
+    """Check pip is available."""
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "--version"],
+                      capture_output=True, check=True)
+        print("  pip: installed ✓")
+        return True
+    except Exception:
+        print("  pip: not found ✗")
+        return False
+
+
+def check_gpu():
+    """Check for GPU."""
+    try:
+        result = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
+        if result.returncode == 0:
+            # Extract GPU name
+            for line in result.stdout.split("\n"):
+                if "NVIDIA" in line and "GeForce" in line or "RTX" in line or "GTX" in line:
+                    gpu = line.strip().split("|")[1].strip() if "|" in line else "NVIDIA GPU"
+                    print(f"  GPU: {gpu} ✓")
+                    return True
+            print("  GPU: NVIDIA detected ✓")
+            return True
+    except FileNotFoundError:
+        pass
+    print("  GPU: not detected (will use CPU — still works, just slower)")
+    return False
 
 
 def check_ram():
     """Check available RAM."""
     try:
         import psutil
-        ram_gb = psutil.virtual_memory().total / (1024 ** 3)
-        if ram_gb < REQUIRED_RAM_GB:
-            print_warn(f"Only {ram_gb:.1f} GB RAM — minimum {REQUIRED_RAM_GB} GB recommended")
+        ram_gb = psutil.virtual_memory().total / (1024**3)
+        print(f"  RAM: {ram_gb:.0f} GB", end="")
+        if ram_gb >= 8:
+            print(" ✓")
         else:
-            print_ok(f"{ram_gb:.1f} GB RAM")
+            print(" ⚠ (8 GB recommended)")
+        return ram_gb
     except ImportError:
-        print_ok("RAM check skipped (psutil not installed)")
+        print("  RAM: unknown (psutil not installed)")
+        return 0
 
 
-def check_disk_space():
-    """Check if enough disk space for model."""
+def check_disk():
+    """Check available disk space."""
     try:
-        free_gb = shutil.disk_usage(str(Path.home())).free / (1024 ** 3)
-        if free_gb < MODEL_SIZE_GB + 1:
-            print_fail(f"Only {free_gb:.1f} GB free disk space. Need ~{MODEL_SIZE_GB + 1:.0f} GB.")
-            sys.exit(1)
-        print_ok(f"{free_gb:.1f} GB free disk space")
+        models_dir = Path.home() / ".leanai" / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        import shutil
+        free = shutil.disk_usage(str(models_dir)).free / (1024**3)
+        print(f"  Disk: {free:.0f} GB free", end="")
+        if free >= 5:
+            print(" ✓")
+        else:
+            print(" ⚠ (5 GB needed for 7B model)")
+        return free
     except Exception:
-        print_ok("Disk space check skipped")
+        print("  Disk: unknown")
+        return 0
 
 
 def install_dependencies():
     """Install Python dependencies."""
+    print("\n  Installing dependencies...")
     req_file = Path(__file__).parent / "requirements.txt"
-    if not req_file.exists():
-        print_fail("requirements.txt not found. Are you in the LeanAI directory?")
-        sys.exit(1)
 
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", str(req_file),
-             "--break-system-packages", "-q"],
-            check=True,
-            capture_output=True,
-            text=True,
+    if req_file.exists():
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q"],
+            capture_output=True, text=True
         )
-        print_ok("All dependencies installed")
-    except subprocess.CalledProcessError as e:
-        # Try without --break-system-packages (older pip)
+        if result.returncode == 0:
+            print("  Dependencies installed ✓")
+            return True
+        else:
+            print(f"  Error: {result.stderr[:200]}")
+            # Try installing core packages individually
+            print("  Trying individual installs...")
+    
+    # Fallback: install core packages one by one
+    packages = [
+        "llama-cpp-python",
+        "chromadb",
+        "fastapi",
+        "uvicorn",
+        "sentence-transformers",
+        "huggingface-hub",
+    ]
+    
+    for pkg in packages:
         try:
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q"],
-                check=True,
-                capture_output=True,
-                text=True,
+                [sys.executable, "-m", "pip", "install", pkg, "-q"],
+                capture_output=True, check=True
             )
-            print_ok("All dependencies installed")
-        except subprocess.CalledProcessError as e2:
-            print_fail(f"Failed to install dependencies")
-            print(f"       Try manually: pip install -r requirements.txt")
-            print(f"       Error: {e2.stderr[:200]}")
-            sys.exit(1)
+            print(f"    {pkg} ✓")
+        except Exception:
+            print(f"    {pkg} ✗ (install manually: pip install {pkg})")
+    
+    return True
 
 
 def download_model():
-    """Download Qwen2.5 Coder 7B model."""
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    model_path = MODEL_DIR / MODEL_NAME
+    """Download the 7B model."""
+    models_dir = Path.home() / ".leanai" / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
 
-    if model_path.exists():
-        size_gb = model_path.stat().st_size / (1024 ** 3)
-        if size_gb > 1:
-            print_ok(f"Model already downloaded ({size_gb:.1f} GB)")
-            return
-        else:
-            print_warn(f"Model file exists but seems incomplete ({size_gb:.2f} GB). Re-downloading...")
-            model_path.unlink()
+    # Check if any model already exists
+    existing = list(models_dir.glob("*.gguf"))
+    if existing:
+        model_path = str(existing[0])
+        print(f"\n  Model found: {existing[0].name} ✓")
+        _set_active_model(model_path)
+        return True
 
-    print(f"       Downloading Qwen2.5 Coder 7B ({MODEL_SIZE_GB} GB)...")
-    print(f"       This will take 5-15 minutes depending on your internet speed.")
-    print(f"       Saving to: {model_path}")
-    print()
+    print("\n  Downloading Qwen2.5 Coder 7B (4.5 GB)...")
+    print("  This may take 5-15 minutes depending on your connection.\n")
 
-    # Try huggingface-cli first
     try:
-        subprocess.run(
-            ["huggingface-cli", "download",
-             "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
-             "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-             "--local-dir", str(MODEL_DIR)],
-            check=True,
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "from huggingface_hub import hf_hub_download; "
+             "import os; "
+             "dest = os.path.join(os.path.expanduser('~'), '.leanai', 'models'); "
+             "os.makedirs(dest, exist_ok=True); "
+             "hf_hub_download('Qwen/Qwen2.5-Coder-7B-Instruct-GGUF', "
+             "'qwen2.5-coder-7b-instruct-q4_k_m.gguf', local_dir=dest); "
+             "print('DONE')"],
+            capture_output=False, text=True, timeout=3600
         )
-        # Rename if needed
-        downloaded = MODEL_DIR / "qwen2.5-coder-7b-instruct-q4_k_m.gguf"
-        if downloaded.exists() and not model_path.exists():
-            downloaded.rename(model_path)
-        print_ok(f"Model downloaded to {model_path}")
-        return
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
 
-    # Fallback: use Python urllib
-    try:
-        import urllib.request
+        # Find the downloaded model
+        downloaded = list(models_dir.glob("*.gguf"))
+        if downloaded:
+            model_path = str(downloaded[0])
+            print(f"\n  Model downloaded: {downloaded[0].name} ✓")
+            _set_active_model(model_path)
+            return True
+        else:
+            print("\n  Download may have failed. Try manually:")
+            print("    python download_models.py qwen-7b")
+            return False
 
-        def progress_hook(count, block_size, total_size):
-            downloaded = count * block_size
-            percent = min(downloaded * 100 / total_size, 100) if total_size > 0 else 0
-            downloaded_gb = downloaded / (1024 ** 3)
-            total_gb = total_size / (1024 ** 3)
-            bar = "█" * int(percent / 5) + "░" * (20 - int(percent / 5))
-            print(f"\r       [{bar}] {percent:.0f}% ({downloaded_gb:.1f}/{total_gb:.1f} GB)", end="", flush=True)
-
-        urllib.request.urlretrieve(MODEL_URL, str(model_path), reporthook=progress_hook)
-        print()
-        print_ok(f"Model downloaded to {model_path}")
+    except subprocess.TimeoutExpired:
+        print("\n  Download timed out. Try manually:")
+        print("    python download_models.py qwen-7b")
+        return False
     except Exception as e:
-        print()
-        print_fail(f"Download failed: {e}")
-        print(f"\n       Download manually from:")
-        print(f"       {MODEL_URL}")
-        print(f"       Save to: {model_path}")
-        sys.exit(1)
+        print(f"\n  Download error: {e}")
+        print("  Try manually:")
+        print("    python download_models.py qwen-7b")
+        return False
 
 
-def create_directories():
-    """Create necessary directories."""
-    dirs = [
-        Path.home() / ".leanai",
-        Path.home() / ".leanai" / "models",
-        Path.home() / ".leanai" / "sessions",
-        Path.home() / ".leanai" / "training_exports",
-        Path.home() / ".leanai" / "evolution",
-    ]
-    for d in dirs:
-        d.mkdir(parents=True, exist_ok=True)
-    print_ok(f"Data directory: {Path.home() / '.leanai'}")
-
-
-def verify_installation():
-    """Quick verification that everything works."""
+def _set_active_model(model_path: str):
+    """Save the active model path so LeanAI knows which model to use."""
     try:
-        import llama_cpp
-        print_ok("llama-cpp-python loaded")
-    except ImportError:
-        print_warn("llama-cpp-python not found — may need manual install")
-
-    try:
-        import chromadb
-        print_ok("ChromaDB loaded")
-    except ImportError:
-        print_warn("ChromaDB not found — memory features limited")
-
-    try:
-        import fastapi
-        print_ok("FastAPI loaded")
-    except ImportError:
-        print_warn("FastAPI not found — web server unavailable")
-
-    model_path = MODEL_DIR / MODEL_NAME
-    if model_path.exists():
-        print_ok(f"Model ready: {MODEL_NAME}")
-    else:
-        print_warn("Model not found — will be downloaded on first run")
-
-
-def launch_leanai():
-    """Ask user if they want to launch LeanAI."""
-    print()
-    print("═══════════════════════════════════════════════════════════")
-    print("  Setup complete! LeanAI is ready.")
-    print()
-    print("  To start LeanAI:")
-    print(f"    python main.py")
-    print()
-    print("  First thing to do after starting:")
-    print("    /brain .    (scan your project)")
-    print()
-    print("  Then just ask questions about your code!")
-    print("═══════════════════════════════════════════════════════════")
-    print()
-
-    try:
-        answer = input("  Launch LeanAI now? [Y/n] ").strip().lower()
-        if answer in ("", "y", "yes"):
-            print()
-            os.execv(sys.executable, [sys.executable, "main.py"])
-    except (KeyboardInterrupt, EOFError):
-        print("\n\n  Run 'python main.py' when you're ready.")
+        config_file = Path.home() / ".leanai" / "active_model.txt"
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(model_path)
+        print(f"  Active model set: {Path(model_path).name} ✓")
+    except Exception as e:
+        print(f"  Warning: could not save active model config: {e}")
 
 
 def main():
-    print_banner()
+    print_header()
 
-    total_steps = 7
+    # System checks
+    print("  System Check")
+    print("  " + "-" * 40)
+    
+    py_ok = check_python()
+    if not py_ok:
+        print("\n  Python 3.10+ is required. Please upgrade.")
+        sys.exit(1)
 
-    print_step(1, total_steps, "Checking system requirements...")
-    check_python()
-    check_git()
+    pip_ok = check_pip()
+    if not pip_ok:
+        print("\n  pip is required. Install it first.")
+        sys.exit(1)
+
+    has_gpu = check_gpu()
     check_ram()
-    check_disk_space()
+    check_disk()
 
-    print()
-    print_step(2, total_steps, "Creating directories...")
-    create_directories()
+    print(f"\n  Platform: {platform.system()} {platform.machine()}")
 
-    print()
-    print_step(3, total_steps, "Installing Python dependencies...")
+    # Install dependencies
+    print("\n  Dependencies")
+    print("  " + "-" * 40)
     install_dependencies()
 
-    print()
-    print_step(4, total_steps, "Downloading AI model...")
+    # Download model
+    print("\n  Model")
+    print("  " + "-" * 40)
     download_model()
 
-    print()
-    print_step(5, total_steps, "Verifying installation...")
-    verify_installation()
+    # GPU acceleration hint
+    if has_gpu:
+        print("\n  GPU Acceleration (optional)")
+        print("  " + "-" * 40)
+        print("  Your GPU was detected! For 3.5x faster responses:")
+        print("    1. Install Vulkan SDK: https://vulkan.lunarg.com/sdk/home")
+        if platform.system() == "Windows":
+            print('    2. $env:CMAKE_ARGS="-DGGML_VULKAN=ON"')
+        else:
+            print('    2. export CMAKE_ARGS="-DGGML_VULKAN=ON"')
+        print("    3. pip install llama-cpp-python --no-cache-dir --force-reinstall")
 
+    # Ready
+    print("\n" + "=" * 60)
+    print("  Setup complete! ✓")
+    print("=" * 60)
     print()
-    print_step(6, total_steps, "Setup complete!")
-    
+    print("  To start LeanAI:")
+    print("    python main.py")
     print()
-    print_step(7, total_steps, "Ready to launch")
-    launch_leanai()
+    print("  First thing to do:")
+    print("    /brain .          # scan your project")
+    print("    /model auto       # auto-switch 7B/32B")
+    print()
+    print("  Then just ask questions about your code!")
+    print()
+
+    # Ask if they want to launch
+    try:
+        answer = input("  Launch LeanAI now? (y/n): ").strip().lower()
+        if answer in ("y", "yes", ""):
+            print()
+            os.system(f"{sys.executable} main.py")
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Run 'python main.py' when ready.")
 
 
 if __name__ == "__main__":
