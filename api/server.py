@@ -46,6 +46,13 @@ from brain.git_intel import GitIntel
 from brain.tdd_loop import TDDLoop, TDDConfig
 from brain.editor import MultiFileEditor
 from brain.session_store import SessionStore
+from core.completer import AutoCompleter
+from core.reasoning_engine import ReasoningEngine
+from core.writing_engine import WritingEngine
+from core.speed_optimizer import SpeedOptimizer
+from brain.semantic_bisect import SemanticGitBisect
+from brain.evolution_tracker import EvolutionTracker
+from tools.adversarial import AdversarialVerifier
 
 
 # ── Request/Response models ───────────────────────────────────────
@@ -133,6 +140,7 @@ async def lifespan(app):
     """Initialize all LeanAI components on startup."""
     global engine, executor, indexer, build_handler, swarm
     global liquid_router, hdc, brain, git_intel, tdd, editor_inst, session_store
+    global completer, reasoner, writer, speed, semantic_bisect, evolution, adversarial
 
     print("[API] Initializing LeanAI engine...")
     engine = LeanAIEngineV3(verbose=False)
@@ -147,6 +155,13 @@ async def lifespan(app):
     tdd = TDDLoop(model_fn=_model_fn, config=TDDConfig(verbose=False))
     editor_inst = MultiFileEditor(".")
     session_store = SessionStore()
+    completer = AutoCompleter(brain=None)
+    reasoner = ReasoningEngine(model_fn=_model_fn)
+    writer = WritingEngine(model_fn=_model_fn)
+    speed = SpeedOptimizer()
+    semantic_bisect = SemanticGitBisect(repo_path=".", model_fn=_model_fn)
+    evolution = EvolutionTracker()
+    adversarial = AdversarialVerifier()
 
     print("[API] LeanAI ready at http://localhost:8000")
     print("[API] Web UI at http://localhost:8000/")
@@ -183,6 +198,13 @@ git_intel: Optional[GitIntel] = None
 tdd: Optional[TDDLoop] = None
 editor_inst: Optional[MultiFileEditor] = None
 session_store: Optional[SessionStore] = None
+completer: Optional[AutoCompleter] = None
+reasoner: Optional[ReasoningEngine] = None
+writer: Optional[WritingEngine] = None
+speed: Optional[SpeedOptimizer] = None
+semantic_bisect: Optional[SemanticGitBisect] = None
+evolution: Optional[EvolutionTracker] = None
+adversarial: Optional[AdversarialVerifier] = None
 
 
 def _model_fn(system_prompt: str, user_prompt: str) -> str:
@@ -445,7 +467,9 @@ async def brain_scan(req: IndexRequest):
     brain = ProjectBrain(path)
     editor_inst = MultiFileEditor(path)
     git_intel = GitIntel(path)
+    semantic_bisect.repo_path = path
     result = brain.scan(force=req.force)
+    completer.update_brain(brain)
     return result
 
 @app.get("/brain/summary")
@@ -519,6 +543,144 @@ async def list_sessions():
 async def search_sessions(req: AskRequest):
     """Search past conversations."""
     return {"results": session_store.search_summary(req.query)}
+
+
+# ── Autocomplete ─────────────────────────────────────────────────
+
+@app.post("/complete")
+async def complete(req: AskRequest):
+    """Get autocomplete suggestions from project brain."""
+    start = time.time()
+    results = completer.complete(req.query, max_results=10)
+    elapsed = (time.time() - start) * 1000
+    return {
+        "completions": [r.to_dict() for r in results],
+        "time_ms": round(elapsed, 1),
+        "source": "brain" if any(r.sort_order == 0 for r in results) else "language",
+    }
+
+@app.get("/complete/stats")
+async def complete_stats():
+    return completer.stats()
+
+
+# ── Reasoning ────────────────────────────────────────────────────
+
+@app.post("/reason")
+async def reason(req: ChatRequest):
+    """Deep reasoning with chain-of-thought + self-critique."""
+    start = time.time()
+    if not engine._model:
+        engine._load_model()
+    result = reasoner.reason(req.message, verbose=False)
+    elapsed = (time.time() - start) * 1000
+    return {
+        "text": result.final_answer,
+        "chain_of_thought": result.chain_of_thought,
+        "critique": result.critique,
+        "num_passes": result.num_passes,
+        "technique": result.technique,
+        "latency_ms": round(elapsed),
+    }
+
+@app.post("/plan")
+async def plan(req: ChatRequest):
+    """Generate a structured plan."""
+    if not engine._model:
+        engine._load_model()
+    result = reasoner.plan(req.message, verbose=False)
+    return {
+        "text": result.final_answer,
+        "num_passes": result.num_passes,
+        "technique": result.technique,
+    }
+
+@app.post("/write")
+async def write_doc(req: ChatRequest):
+    """Write a document (auto-detects type)."""
+    if not engine._model:
+        engine._load_model()
+    result = writer.write(req.message, verbose=False)
+    return {
+        "text": result.final_text,
+        "doc_type": result.doc_type,
+        "outline": result.outline,
+        "num_passes": result.num_passes,
+        "word_count": result.word_count,
+    }
+
+
+# ── Semantic Git Bisect ──────────────────────────────────────────
+
+@app.post("/bisect")
+async def bisect(req: ChatRequest):
+    """Find which commit most likely introduced a bug."""
+    result = semantic_bisect.find_bug(req.message, num_commits=20)
+    return {
+        "bug_description": result.bug_description,
+        "commits_analyzed": result.commits_analyzed,
+        "most_likely": {
+            "hash": result.most_likely.short_hash,
+            "message": result.most_likely.message,
+            "author": result.most_likely.author,
+            "suspicion": result.most_likely.suspicion_score,
+            "reasoning": result.most_likely.reasoning,
+            "files": result.most_likely.files_changed,
+        } if result.most_likely else None,
+        "suspects": [
+            {"hash": s.short_hash, "message": s.message, "suspicion": s.suspicion_score}
+            for s in result.top_suspects[:5]
+        ],
+        "summary": result.summary(),
+    }
+
+
+# ── Adversarial Code Verification ────────────────────────────────
+
+@app.post("/fuzz")
+async def fuzz_code(req: AskRequest):
+    """Run adversarial verification on code."""
+    result = adversarial.fuzz(req.query)
+    return {
+        "function": result.function_name,
+        "total": result.total_cases,
+        "passed": result.passed,
+        "failed": result.failed,
+        "failures": [
+            {"input": c.input_repr, "error": c.error_type, "message": c.error}
+            for c in result.cases if not c.passed
+        ],
+        "suggestions": result.suggestions,
+        "summary": result.summary(),
+    }
+
+
+# ── Evolution Tracking ───────────────────────────────────────────
+
+@app.get("/evolution")
+async def get_evolution():
+    """Get project evolution narrative and insights."""
+    return {
+        "narrative": evolution.get_narrative(),
+        "insights": [
+            {"theme": i.theme, "stage": i.stage, "trajectory": i.trajectory}
+            for i in evolution.get_insights()
+        ],
+        "predictions": evolution.predict_next_topics(),
+        "stats": evolution.stats(),
+    }
+
+
+# ── Speed ────────────────────────────────────────────────────────
+
+@app.get("/speed")
+async def get_speed():
+    """Get speed optimization report."""
+    return {
+        "report": speed.optimization_report(),
+        "cache": speed.cache.stats(),
+        "stats": speed.stats(),
+    }
 
 
 # ── Web UI ────────────────────────────────────────────────────────
