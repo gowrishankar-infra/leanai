@@ -517,12 +517,22 @@ class LeanAIEngineV3:
             from llama_cpp import Llama
             model_name = Path(self.model_path).name
             print(f"[LeanAI v3] Loading {model_name} ({self.n_threads} threads)...")
+            # Dynamic GPU layers: 7B can fit more layers, 32B needs fewer
+            model_name_lower = Path(self.model_path).name.lower()
+            if any(x in model_name_lower for x in ["32b", "33b", "34b", "70b"]):
+                gpu_layers = 4   # 32B model — only 4 layers fit in 4GB VRAM
+            elif any(x in model_name_lower for x in ["7b", "6b", "8b"]):
+                gpu_layers = 15  # 7B model — most layers fit in 4GB VRAM
+            else:
+                gpu_layers = 8   # default
+
             self._model = Llama(
                 model_path=self.model_path,
                 n_ctx=4096, n_threads=self.n_threads, n_batch=1024,
-                n_gpu_layers=0, use_mmap=True, use_mlock=False,
+                n_gpu_layers=gpu_layers, use_mmap=True, use_mlock=False,
                 logits_all=False, verbose=self.verbose,
             )
+            print(f"[LeanAI v3] GPU layers: {gpu_layers}")
             self._model_loaded = True
             print("[LeanAI v3] Model loaded. Ready.")
         except ImportError:
