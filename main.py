@@ -22,6 +22,10 @@ from brain.semantic_bisect import SemanticGitBisect
 from brain.evolution_tracker import EvolutionTracker
 from tools.adversarial import AdversarialVerifier
 from core.code_quality import CodeQualityEnhancer
+from core.code_verifier import CodeGroundedVerifier
+from core.cascade import CascadeInference
+from core.react import ReActReasoner
+from core.mixture_of_agents import MixtureOfAgents
 from core.streaming import StreamingGenerator, StreamConfig, print_streaming_header, print_streaming_footer
 from core.smart_context import SmartContext
 from core.auto_recovery import AutoRecovery, RecoveryConfig
@@ -184,6 +188,18 @@ def main():
 
     # ── Code Quality Enhancer (two-pass review) ───────────────────
     code_enhancer = CodeQualityEnhancer(model_fn=model_fn, enabled=True)
+
+    # ── Code-Grounded Verification (fact-checks against AST) ──
+    code_verifier = CodeGroundedVerifier(brain=None)
+
+    # ── Cascade Inference (7B draft → 32B review) ─────────────
+    cascade = CascadeInference(draft_fn=model_fn, review_fn=model_fn, enabled=True)
+
+    # ── Tool-Augmented Reasoning (ReAct) ──────────────────────
+    react = ReActReasoner(model_fn=model_fn, max_steps=3)
+
+    # ── Mixture of Agents ─────────────────────────────────────
+    moa = MixtureOfAgents(model_fn=model_fn, perspectives=3, enabled=True)
 
     # ══════════════════════════════════════════════════════════════
     # STARTUP DISPLAY
@@ -383,6 +399,12 @@ def main():
             git_intel = GitIntel(path)  # update git too
             smart_ctx = SmartContext(brain=brain, git_intel=git_intel, session_store=sessions, hdc=hdc)
             completer.update_brain(brain)  # update autocomplete index
+            code_verifier.update_brain(brain)  # update fact-checker
+
+            # Register ReAct tools with brain data
+            react.register_tool("brain", brain.find_function, "Look up function/file in project")
+            if git_intel and git_intel.is_available:
+                react.register_tool("git", lambda q: git_intel.recent_activity(days=7), "Check git history")
             print(f"[Brain] Scanned {result['files_found']} files in {result['scan_time_ms']}ms")
             print(brain.project_summary())
 
@@ -1268,7 +1290,17 @@ def main():
             downloaded = model_mgr.get_downloaded_models()
             if model_mgr.mode == "auto" and len(downloaded) >= 1:
                 best_model = model_mgr.select_model(user_input)
-                if best_model != current_model_key and best_model in downloaded:
+
+                # Check if cascade will handle this query (skip auto-switch to 32B)
+                will_cascade = (
+                    cascade.enabled
+                    and len(downloaded) >= 2
+                    and cascade.should_cascade(user_input)
+                )
+
+                if will_cascade:
+                    pass  # cascade handles model switching itself
+                elif best_model != current_model_key and best_model in downloaded:
                     best_info = model_mgr.get_model_info(best_model)
                     best_path = model_mgr.get_model_path(best_model)
                     if best_path:
@@ -1310,6 +1342,70 @@ def main():
             if brain:
                 brain_ctx = brain.get_context_for_query(user_input)
 
+            # ── ReAct: Gather tool data to enrich context ─────
+            react_data = ""
+            if brain and react.tools:
+                tool_results = react._gather_tool_data(user_input)
+                if tool_results:
+                    react_parts = []
+                    for tool_name, tool_query, tool_result in tool_results:
+                        react_parts.append(f"[{tool_name}: {tool_query}]\n{tool_result[:500]}")
+                    react_data = "\n".join(react_parts)
+                    print(f"  {C.DIM}ReAct: gathered data from {len(tool_results)} tool(s){C.RESET}")
+
+            # ── Mixture of Agents: multi-perspective for reviews ──
+            if moa.should_use_moa(user_input):
+                print(f"  {C.fg(222)}⚙ Multi-perspective analysis...{C.RESET}", flush=True)
+                moa_context = brain_ctx or ""
+                if react_data:
+                    moa_context += "\n" + react_data
+                moa_result = moa.analyze(user_input, context=moa_context)
+
+                if moa_result.final_answer and len(moa_result.final_answer.strip()) > 30:
+                    print(f"  {C.DIM}  {moa_result.summary()}{C.RESET}")
+
+                    # Create a response-like object
+                    class _MoAResp:
+                        def __init__(self, text):
+                            self.text = text
+                            self.confidence = 0.9
+                            self.confidence_label = "High"
+                            self.tier_used = "moa"
+                            self.latency_ms = moa_result.elapsed_ms
+                            self.answered_from_memory = False
+                            self.memory_context_used = False
+                            self.verified = False
+                            self.code_executed = False
+                            self.code_passed = False
+                            self.code_output = ""
+
+                    resp = _MoAResp(moa_result.final_answer)
+                    elapsed = time.time() - start
+                    text = resp.text
+                    confidence = 90
+                    conf_label = "High"
+                    tier = "moa"
+                    latency_ms = moa_result.elapsed_ms
+                    from_mem = False
+                    mem_active = False
+                    verified = False
+                    code_exec = False
+                    code_passed = False
+                    code_output = ""
+
+                    # Code verification
+                    if code_verifier.should_verify(user_input, text):
+                        text = code_verifier.verify(text, query=user_input)
+
+                    print_response_header()
+                    print(format_response(text))
+                    separator()
+                    print(format_confidence(confidence, conf_label))
+                    meta_parts = [f"⏱ {elapsed:.0f}s", f"⧫ {moa_result.num_perspectives} perspectives"]
+                    print(f"  {C.DIM}{' · '.join(meta_parts)}{C.RESET}")
+                    sessions.add_exchange(query=user_input, response=text, tier=tier, confidence=confidence)
+                    continue
+
             # Generate response with smart context + auto-recovery
             try:
                 # Speed: Use optimal max_tokens for this query
@@ -1318,30 +1414,100 @@ def main():
                 # Smart context: build enriched context
                 enriched_context = smart_ctx.build(user_input)
 
-                # Auto-recovery wrapped generation
-                def do_generate(max_tokens, **kw):
-                    return engine.generate(user_input,
-                                           config=GenerationConfig(max_tokens=max_tokens),
-                                           project_context=enriched_context)
+                # Inject ReAct tool data into context
+                if react_data:
+                    enriched_context = react_data + "\n\n" + enriched_context if enriched_context else react_data
 
-                def do_fallback(max_tokens, **kw):
-                    return engine.generate(user_input,
-                                           config=GenerationConfig(max_tokens=max(max_tokens // 2, 128)),
-                                           project_context=enriched_context)
-
-                rec_result = recovery.safe_generate(
-                    generate_fn=do_generate,
-                    max_tokens=smart_tokens,
-                    fallback_fn=do_fallback,
+                # ── CASCADE INFERENCE ──────────────────────────────
+                # For complex queries: 7B drafts fast, 32B reviews and corrects
+                # Result: ~2-3 min instead of ~7 min for 32B from scratch
+                use_cascade = (
+                    cascade.enabled
+                    and model_mgr.mode == "auto"
+                    and len(model_mgr.get_downloaded_models()) >= 2
+                    and cascade.should_cascade(user_input)
                 )
 
-                if rec_result.success:
-                    resp = rec_result.text  # this is the LeanAIResponse object
-                    if rec_result.recovered:
-                        print(f"  [Recovery] Recovered: {rec_result.recovery_note}")
+                if use_cascade:
+                    print(f"  {C.fg(141)}⚡ Cascade: 7B drafting → 32B reviewing...{C.RESET}", flush=True)
+
+                    # Step 1: Ensure 7B is loaded for fast draft
+                    small_path = model_mgr.get_model_path("qwen-7b")
+                    if small_path and current_model_key != "qwen-7b":
+                        engine.switch_model(small_path)
+                        current_model_key = "qwen-7b"
+
+                    # Step 2: 7B generates draft (fast — ~30 sec)
+                    draft_start = time.time()
+                    draft_resp = engine.generate(
+                        user_input,
+                        config=GenerationConfig(max_tokens=smart_tokens),
+                        project_context=enriched_context,
+                    )
+                    draft_text = getattr(draft_resp, "text", str(draft_resp))
+                    draft_ms = (time.time() - draft_start) * 1000
+                    print(f"  {C.DIM}  Draft done ({draft_ms/1000:.0f}s). Reviewing...{C.RESET}", flush=True)
+
+                    # Step 3: Switch to 32B for review
+                    big_path = model_mgr.get_model_path("qwen-32b")
+                    if big_path:
+                        engine.switch_model(big_path)
+                        current_model_key = "qwen-32b"
+
+                        # Step 4: 32B reviews draft (focused — generates corrections only)
+                        review_prompt = (
+                            f"A junior developer wrote this response to the question: {user_input}\n\n"
+                            f"Draft:\n{draft_text}\n\n"
+                            "Fix any errors, add anything important that's missing, "
+                            "improve unclear explanations. Keep what's good. "
+                            "Output ONLY the improved response."
+                        )
+                        review_start = time.time()
+                        review_resp = engine.generate(
+                            review_prompt,
+                            config=GenerationConfig(max_tokens=smart_tokens),
+                            project_context=enriched_context,
+                        )
+                        review_text = getattr(review_resp, "text", str(review_resp))
+                        review_ms = (time.time() - review_start) * 1000
+
+                        # Use reviewed version if substantive
+                        if review_text and len(review_text.strip()) > 30:
+                            resp = review_resp
+                        else:
+                            resp = draft_resp
+
+                        total_ms = draft_ms + review_ms
+                        print(f"  {C.fg(114)}  Cascade complete: {draft_ms/1000:.0f}s draft + {review_ms/1000:.0f}s review = {total_ms/1000:.0f}s total{C.RESET}")
+                    else:
+                        # 32B not available, use draft
+                        resp = draft_resp
                 else:
-                    print(f"\nError: {rec_result.error}")
-                    continue
+                    # ── STANDARD GENERATION ────────────────────────
+                    # Auto-recovery wrapped generation
+                    def do_generate(max_tokens, **kw):
+                        return engine.generate(user_input,
+                                               config=GenerationConfig(max_tokens=max_tokens),
+                                               project_context=enriched_context)
+
+                    def do_fallback(max_tokens, **kw):
+                        return engine.generate(user_input,
+                                               config=GenerationConfig(max_tokens=max(max_tokens // 2, 128)),
+                                               project_context=enriched_context)
+
+                    rec_result = recovery.safe_generate(
+                        generate_fn=do_generate,
+                        max_tokens=smart_tokens,
+                        fallback_fn=do_fallback,
+                    )
+
+                    if rec_result.success:
+                        resp = rec_result.text  # this is the LeanAIResponse object
+                        if rec_result.recovered:
+                            print(f"  [Recovery] Recovered: {rec_result.recovery_note}")
+                    else:
+                        print(f"\nError: {rec_result.error}")
+                        continue
             except Exception as e:
                 print(f"\nError: {e}")
                 continue
@@ -1369,6 +1535,10 @@ def main():
                 print(f"  {C.DIM}Running code review...{C.RESET}", end="", flush=True)
                 text = code_enhancer.enhance(text, query=user_input)
                 print(f"\r{' ' * 40}\r", end="", flush=True)
+
+            # Code-Grounded Verification: check claims against actual AST
+            if code_verifier.should_verify(user_input, text):
+                text = code_verifier.verify(text, query=user_input)
 
             print_response_header()
             print(format_response(text))
