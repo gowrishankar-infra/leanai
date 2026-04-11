@@ -259,6 +259,10 @@ def main():
 ║  (just type)       Normal AI query                     ║
 ║  /swarm <question> 3-pass consensus (highest accuracy) ║
 ║  /run <code>       Execute Python code                 ║
+║  /explain <error> Explain error + how to fix          ║
+║  /test <func>     Auto-generate unit tests            ║
+║  /diff            Explain last git commit             ║
+║  /security <file> Scan code for vulnerabilities       ║
 ║                                                        ║
 ║ BUILD                                                  ║
 ║  /build <task>     Multi-step project builder           ║
@@ -579,6 +583,233 @@ def main():
                     print(f"Output: {stdout}")
             else:
                 print(f"FAILED: {stderr}")
+
+        # ══════════════════════════════════════════════════════════
+        # EXPLAIN — paste an error, get a fix
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/explain"):
+            error_text = user_input[8:].strip()
+            if not error_text:
+                print("Usage: /explain <error message or traceback>")
+                print("  Paste any error and LeanAI explains what went wrong + how to fix it.")
+                continue
+
+            print(f"  {C.DIM}Analyzing error...{C.RESET}", flush=True)
+
+            # Build a focused prompt for error explanation
+            explain_prompt = (
+                "A developer got this error. Explain:\n"
+                "1. What went wrong (in plain English, one sentence)\n"
+                "2. Why it happened (the root cause)\n"
+                "3. How to fix it (show the corrected code)\n"
+                "4. How to prevent it in the future (one tip)\n\n"
+                "Keep it concise. No filler.\n\n"
+                f"Error:\n{error_text}"
+            )
+
+            # Add project context if brain is loaded
+            if brain:
+                # Try to find relevant files from the error traceback
+                error_lower = error_text.lower()
+                file_context = ""
+                for rel_path in list(brain._file_analyses.keys())[:200]:
+                    fname = os.path.basename(rel_path).lower()
+                    if fname in error_lower:
+                        desc = brain.describe_file(rel_path)
+                        if desc:
+                            file_context += f"\n[File: {rel_path}]\n{desc[:400]}"
+                            break
+                if file_context:
+                    explain_prompt += f"\n\nProject context:{file_context}"
+
+            config = GenerationConfig(max_tokens=1024, temperature=0.1)
+            resp = engine.generate(explain_prompt, config=config)
+            text = getattr(resp, "text", str(resp))
+
+            print_response_header()
+            print(format_response(text))
+            separator()
+
+            confidence = getattr(resp, "confidence", 0.7)
+            if isinstance(confidence, float) and 0 < confidence <= 1.0:
+                confidence *= 100
+            print(format_confidence(confidence, "Explanation"))
+            sessions.add_exchange(query=user_input, response=text, tier="explain", confidence=confidence)
+
+        # ══════════════════════════════════════════════════════════
+        # TEST — auto-generate unit tests for a function
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/test"):
+            code_or_func = user_input[5:].strip()
+            if not code_or_func:
+                print("Usage: /test <function code or function name>")
+                print("  Generates unit tests for a function.")
+                continue
+
+            print(f"  {C.DIM}Generating tests...{C.RESET}", flush=True)
+
+            # Check if it's a function name from brain
+            func_context = ""
+            if brain and not code_or_func.startswith("def "):
+                info = brain.find_function(code_or_func)
+                if info and "not found" not in info.lower():
+                    func_context = info
+                    # Try to read the actual source
+                    for rel_path in brain._file_analyses.keys():
+                        analysis = brain._file_analyses[rel_path]
+                        for func in analysis.get("functions", []):
+                            if func.get("name", "").lower() == code_or_func.lower():
+                                try:
+                                    full_path = os.path.join(brain.config.project_path, rel_path)
+                                    with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                                        lines = f.readlines()
+                                    start = func.get("line", 1) - 1
+                                    end = min(start + 30, len(lines))
+                                    func_context = "".join(lines[start:end])
+                                except Exception:
+                                    pass
+                                break
+
+            test_prompt = (
+                "Generate comprehensive pytest unit tests for this function. Include:\n"
+                "- Happy path tests (normal inputs)\n"
+                "- Edge cases (empty, None, negative, zero, very large)\n"
+                "- Error cases (wrong types, invalid inputs)\n"
+                "- Boundary conditions\n\n"
+                "Show ONLY the test code in a single ```python block. "
+                "Include necessary imports. Make tests runnable as-is.\n\n"
+            )
+
+            if func_context:
+                test_prompt += f"Function:\n```python\n{func_context}\n```"
+            else:
+                test_prompt += f"Function:\n```python\n{code_or_func}\n```"
+
+            config = GenerationConfig(max_tokens=1536, temperature=0.1)
+            resp = engine.generate(test_prompt, config=config)
+            text = getattr(resp, "text", str(resp))
+
+            print_response_header()
+            print(format_response(text))
+            separator()
+
+            confidence = getattr(resp, "confidence", 0.7)
+            if isinstance(confidence, float) and 0 < confidence <= 1.0:
+                confidence *= 100
+            print(format_confidence(confidence, "Tests Generated"))
+            sessions.add_exchange(query=user_input, response=text, tier="test", confidence=confidence)
+
+        # ══════════════════════════════════════════════════════════
+        # DIFF — explain what changed in last commit
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/diff"):
+            if not git_intel or not git_intel.is_available:
+                print("Not a git repository.")
+                continue
+
+            print(f"  {C.DIM}Analyzing last commit...{C.RESET}", flush=True)
+
+            try:
+                import subprocess as sp
+                result = sp.run(["git", "diff", "HEAD~1", "--stat"], capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=".")
+                diff_stat = result.stdout.strip()
+                result2 = sp.run(["git", "log", "-1", "--pretty=%s"], capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=".")
+                commit_msg = result2.stdout.strip()
+                result3 = sp.run(["git", "diff", "HEAD~1", "--", "*.py"], capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=".")
+                diff_content = result3.stdout[:3000]  # first 3000 chars of actual diff
+
+                diff_prompt = (
+                    "Explain this git commit in plain English. What changed, why it matters, "
+                    "and any risks or things to watch out for.\n\n"
+                    f"Commit message: {commit_msg}\n\n"
+                    f"Files changed:\n{diff_stat}\n\n"
+                    f"Code diff (first 3000 chars):\n{diff_content}"
+                )
+
+                config = GenerationConfig(max_tokens=1024, temperature=0.1)
+                resp = engine.generate(diff_prompt, config=config)
+                text = getattr(resp, "text", str(resp))
+
+                print_response_header()
+                print(f"  {C.fg(75)}Commit:{C.RESET} {commit_msg}")
+                print(f"  {C.DIM}{diff_stat}{C.RESET}")
+                separator()
+                print(format_response(text))
+                separator()
+
+                confidence = getattr(resp, "confidence", 0.7)
+                if isinstance(confidence, float) and 0 < confidence <= 1.0:
+                    confidence *= 100
+                print(format_confidence(confidence, "Diff Analysis"))
+                sessions.add_exchange(query=user_input, response=text, tier="diff", confidence=confidence)
+
+            except Exception as e:
+                print(f"Error: {e}")
+
+        # ══════════════════════════════════════════════════════════
+        # SECURITY — scan code for vulnerabilities
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/security"):
+            target = user_input[9:].strip()
+            if not target:
+                print("Usage: /security <filename or code>")
+                print("  Scans code for security vulnerabilities.")
+                continue
+
+            print(f"  {C.DIM}Scanning for vulnerabilities...{C.RESET}", flush=True)
+
+            # If it's a filename and brain is loaded, read the file
+            code_to_scan = target
+            if brain and not target.startswith("def ") and not target.startswith("import "):
+                for rel_path in brain._file_analyses.keys():
+                    if target.lower() in rel_path.lower():
+                        try:
+                            full_path = os.path.join(brain.config.project_path, rel_path)
+                            with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                                code_to_scan = f.read(5000)
+                            code_to_scan = f"File: {rel_path}\n\n{code_to_scan}"
+                        except Exception:
+                            pass
+                        break
+
+            security_prompt = (
+                "Perform a security audit on this code. Check for:\n"
+                "- SQL injection\n"
+                "- XSS (cross-site scripting)\n"
+                "- Command injection\n"
+                "- Path traversal\n"
+                "- Hardcoded secrets/credentials\n"
+                "- Insecure deserialization\n"
+                "- Missing input validation\n"
+                "- Insecure file operations\n"
+                "- CORS misconfiguration\n"
+                "- Missing authentication/authorization\n\n"
+                "For each issue found, state:\n"
+                "- Severity (Critical/High/Medium/Low)\n"
+                "- What the vulnerability is\n"
+                "- Where it is (line or function)\n"
+                "- How to fix it (show corrected code)\n\n"
+                "If no issues found, say 'No security issues detected.'\n\n"
+                f"Code to audit:\n```\n{code_to_scan}\n```"
+            )
+
+            config = GenerationConfig(max_tokens=1536, temperature=0.1)
+            resp = engine.generate(security_prompt, config=config)
+            text = getattr(resp, "text", str(resp))
+
+            print_response_header()
+            print(format_response(text))
+            separator()
+
+            confidence = getattr(resp, "confidence", 0.7)
+            if isinstance(confidence, float) and 0 < confidence <= 1.0:
+                confidence *= 100
+            print(format_confidence(confidence, "Security Audit"))
+            sessions.add_exchange(query=user_input, response=text, tier="security", confidence=confidence)
 
         # ══════════════════════════════════════════════════════════
         # INDEX & ASK

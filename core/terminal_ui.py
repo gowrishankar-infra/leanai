@@ -138,6 +138,8 @@ def print_commands():
     print(f"    {C.fg(141)}▸{r} {C.fg(141)}Project{r}   /brain <path> {DIMMED}│ /describe <file> │ /deps <file>{r}")
     print(f"    {C.fg(69)}▸{r} {C.fg(69)}Git{r}       /git activity {DIMMED}│ /git hotspots │ /git history <file>{r}")
     print(f"    {C.fg(135)}▸{r} {C.fg(135)}Verify{r}    /fuzz <code> {DIMMED}│ /bisect <bug>{r}")
+    print(f"    {C.fg(210)}▸{r} {C.fg(210)}Debug{r}     /explain <error> {DIMMED}│ /diff │ /security <file>{r}")
+    print(f"    {C.fg(222)}▸{r} {C.fg(222)}Test{r}      /test <function>")
     print(f"    {C.fg(81)}▸{r} {C.fg(81)}Complete{r}  /complete <prefix>")
     print(f"    {C.fg(147)}▸{r} {C.fg(147)}Track{r}     /evolution narrative {DIMMED}│ insights │ predict{r}")
     print(f"    {C.fg(114)}▸{r} {C.fg(114)}Memory{r}    /remember <fact> {DIMMED}│ /profile │ /sessions{r}")

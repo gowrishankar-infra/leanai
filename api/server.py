@@ -418,12 +418,75 @@ async def _handle_chat_command(msg: str) -> str:
             "  /git changelog    — auto-generated changelog\n"
             "  /complete <text>  — autocomplete from project\n"
             "  /fuzz <code>      — adversarial testing\n"
+            "  /explain <error>  — explain error + how to fix\n"
+            "  /test <function>  — auto-generate unit tests\n"
+            "  /diff             — explain last git commit\n"
+            "  /security <file>  — scan for vulnerabilities\n"
             "  /remember <fact>  — store a fact\n"
             "  /profile          — view your profile\n"
             "  /model auto       — auto-switch models\n"
             "  /status           — system status\n"
             "  /help             — this message"
         )
+
+    # /explain — explain an error
+    if cmd == "/explain":
+        if not arg:
+            return "Usage: `/explain <error message or traceback>`"
+        explain_prompt = (
+            "A developer got this error. Explain:\n"
+            "1. What went wrong (plain English, one sentence)\n"
+            "2. Why it happened (root cause)\n"
+            "3. How to fix it (show corrected code)\n"
+            "4. How to prevent it (one tip)\n\n"
+            f"Error:\n{arg}"
+        )
+        result = _model_fn("You are an expert debugger. Be concise.", explain_prompt)
+        return result
+
+    # /test — generate unit tests
+    if cmd == "/test":
+        if not arg:
+            return "Usage: `/test <function code or function name>`"
+        test_prompt = (
+            "Generate comprehensive pytest unit tests. Include happy path, "
+            "edge cases (empty, None, negative), and error cases. "
+            "Show ONLY test code in a ```python block.\n\n"
+            f"Function:\n```python\n{arg}\n```"
+        )
+        result = _model_fn("You are a testing expert. Generate runnable pytest tests.", test_prompt)
+        return result
+
+    # /diff — explain last commit
+    if cmd == "/diff":
+        try:
+            import subprocess as sp
+            r1 = sp.run(["git", "diff", "HEAD~1", "--stat"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+            r2 = sp.run(["git", "log", "-1", "--pretty=%s"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+            r3 = sp.run(["git", "diff", "HEAD~1", "--", "*.py"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+            diff_prompt = (
+                f"Explain this commit in plain English.\n\n"
+                f"Message: {r2.stdout.strip()}\n"
+                f"Files:\n{r1.stdout.strip()}\n"
+                f"Diff:\n{r3.stdout[:2000]}"
+            )
+            result = _model_fn("You explain git diffs clearly and concisely.", diff_prompt)
+            return f"**Commit:** {r2.stdout.strip()}\n\n{result}"
+        except Exception as e:
+            return f"Error: {e}"
+
+    # /security — scan for vulnerabilities
+    if cmd == "/security":
+        if not arg:
+            return "Usage: `/security <filename or code>`"
+        security_prompt = (
+            "Security audit this code. Check for SQL injection, XSS, "
+            "command injection, hardcoded secrets, missing validation, "
+            "path traversal. For each issue: severity, description, fix.\n\n"
+            f"Code:\n```\n{arg}\n```"
+        )
+        result = _model_fn("You are a security auditor. Be specific about vulnerabilities.", security_prompt)
+        return result
 
     # Unknown command — return None to fall through to regular chat
     return None
