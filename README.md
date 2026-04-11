@@ -490,9 +490,7 @@ leanai/
 
 ## How It Was Built
 
-I built LeanAI using Claude (Anthropic) as my coding partner. I made every architectural decision, debugged every platform issue, tested everything on my machine, and directed every phase. Claude wrote most of the code. I believe this is how software will be built going forward — human vision + AI execution.
-
-I'm sharing this openly because there's no shame in using AI to build software. 92% of developers use AI coding tools (GitHub 2025). The architecture, the vision, the debugging, the integration, and the testing — that's my work.
+I built LeanAI using Claude (Anthropic) as my coding partner. I made every architectural decision, debugged every platform issue, tested everything on my machine, and directed every phase. Claude wrote most of the code. 
 
 ---
 
