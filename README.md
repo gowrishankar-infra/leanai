@@ -154,7 +154,7 @@ Scans your entire codebase with deep analysis. Python uses full AST parsing; Jav
 /impact main.py                   # if I change this, what breaks?
 ```
 
-Supported languages: Python, JavaScript, TypeScript, Go, Rust, Java, C/C++, C#, Ruby, PHP, SQL.
+Supported languages: Python (AST), JavaScript, TypeScript, Go, Rust, Java, C/C++, C#, Swift, Kotlin, Dart, Ruby, PHP, Elixir, Lua, R, Julia, Zig, Nim, Shell/Bash, SQL — plus generic fallback for any other language.
 
 ### Git Intelligence
 
