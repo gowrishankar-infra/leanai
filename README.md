@@ -144,15 +144,17 @@ Chat, Swarm Consensus, Run Code, TDD, Brain Scan, Git Intelligence — all in yo
 
 ### Project Brain
 
-Scans your entire codebase with AST analysis. Builds a full dependency graph. Watches for file changes in real-time.
+Scans your entire codebase with deep analysis. Python uses full AST parsing; JavaScript, TypeScript, Go, Rust, Java, C/C++, C#, Ruby, PHP, and SQL use regex-based parsing. Builds a full dependency graph across all languages.
 
 ```
-/brain .                          # scan current project
+/brain .                          # scan current project (any language)
 /describe core/engine_v3.py       # what's in this file?
 /find generate                    # find a function across project
 /deps core/engine_v3.py           # what depends on this file?
 /impact main.py                   # if I change this, what breaks?
 ```
+
+Supported languages: Python, JavaScript, TypeScript, Go, Rust, Java, C/C++, C#, Ruby, PHP, SQL.
 
 ### Git Intelligence
 

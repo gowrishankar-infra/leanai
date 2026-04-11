@@ -368,11 +368,15 @@ def analyze_python_file(filepath: str, source: Optional[str] = None) -> FileAnal
 
 
 def analyze_file(filepath: str, source: Optional[str] = None) -> FileAnalysis:
-    """Analyze a source file. Currently supports Python; extensible."""
+    """Analyze a source file. Python uses AST; other languages use regex parsing."""
     ext = os.path.splitext(filepath)[1].lower()
     if ext in (".py", ".pyw"):
         return analyze_python_file(filepath, source)
-    # For non-Python files, return basic info
+    # Multi-language regex parsing
+    if ext in (".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".c", ".cpp",
+               ".h", ".hpp", ".cs", ".kt", ".swift", ".rb", ".php", ".sql"):
+        return _analyze_with_regex(filepath, source, ext.lstrip("."))
+    # Unknown file types — basic info only
     result = FileAnalysis(filepath=filepath, language=ext.lstrip("."))
     if source is None:
         try:
@@ -383,3 +387,285 @@ def analyze_file(filepath: str, source: Optional[str] = None) -> FileAnalysis:
             return result
     result.total_lines = source.count("\n") + 1
     return result
+
+
+def _analyze_with_regex(filepath: str, source: Optional[str] = None,
+                        lang: str = "") -> FileAnalysis:
+    """Regex-based analysis for non-Python languages."""
+    result = FileAnalysis(filepath=filepath, language=lang)
+
+    if source is None:
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                source = f.read()
+        except (FileNotFoundError, IOError) as e:
+            result.error = str(e)
+            return result
+
+    result.total_lines = source.count("\n") + 1
+    lines = source.split("\n")
+
+    # ── Language-specific patterns ────────────────────────────
+    if lang in ("js", "jsx", "ts", "tsx"):
+        _parse_javascript(source, lines, filepath, result)
+    elif lang == "go":
+        _parse_go(source, lines, filepath, result)
+    elif lang in ("rs",):
+        _parse_rust(source, lines, filepath, result)
+    elif lang in ("java", "kt"):
+        _parse_java(source, lines, filepath, result)
+    elif lang in ("c", "cpp", "h", "hpp", "cs"):
+        _parse_c_cpp(source, lines, filepath, result)
+    elif lang == "sql":
+        _parse_sql(source, lines, filepath, result)
+    elif lang in ("rb",):
+        _parse_ruby(source, lines, filepath, result)
+    elif lang in ("php",):
+        _parse_php(source, lines, filepath, result)
+
+    return result
+
+
+def _parse_javascript(source, lines, filepath, result):
+    """Parse JavaScript/TypeScript functions and classes."""
+    # Functions: function name(), const name = () =>, async function name()
+    patterns = [
+        r"(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)",
+        r"(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*=>",
+        r"(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?function\s*\(([^)]*)\)",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, source):
+            name = match.group(1)
+            args = [a.strip().split(":")[0].strip() for a in match.group(2).split(",") if a.strip()]
+            line_num = source[:match.start()].count("\n") + 1
+            result.functions.append(FunctionInfo(
+                name=name, filepath=filepath, line_start=line_num,
+                line_end=line_num + 5, args=args,
+            ))
+
+    # Methods inside classes
+    for match in re.finditer(r"(?:async\s+)?(\w+)\s*\(([^)]*)\)\s*\{", source):
+        name = match.group(1)
+        if name not in ("if", "for", "while", "switch", "catch", "function"):
+            args = [a.strip().split(":")[0].strip() for a in match.group(2).split(",") if a.strip()]
+            line_num = source[:match.start()].count("\n") + 1
+            # Avoid duplicates
+            if not any(f.name == name and f.line_start == line_num for f in result.functions):
+                result.functions.append(FunctionInfo(
+                    name=name, filepath=filepath, line_start=line_num,
+                    line_end=line_num + 5, args=args, is_method=True,
+                ))
+
+    # Classes
+    for match in re.finditer(r"(?:export\s+)?class\s+(\w+)(?:\s+extends\s+(\w+))?", source):
+        line_num = source[:match.start()].count("\n") + 1
+        bases = [match.group(2)] if match.group(2) else []
+        result.classes.append(ClassInfo(
+            name=match.group(1), filepath=filepath, line_start=line_num,
+            line_end=line_num + 10, bases=bases,
+        ))
+
+    # Imports
+    for match in re.finditer(r"import\s+.*?from\s+['\"]([^'\"]+)['\"]", source):
+        result.imports.append(ImportInfo(module=match.group(1)))
+    for match in re.finditer(r"require\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", source):
+        result.imports.append(ImportInfo(module=match.group(1)))
+
+
+def _parse_go(source, lines, filepath, result):
+    """Parse Go functions, methods, structs, interfaces."""
+    # Functions: func name(args) returntype
+    for match in re.finditer(r"func\s+(\w+)\s*\(([^)]*)\)(?:\s*\(?([^)]*)\)?)?", source):
+        name = match.group(1)
+        args = [a.strip().split(" ")[0] for a in match.group(2).split(",") if a.strip()]
+        ret = match.group(3) if match.group(3) else None
+        line_num = source[:match.start()].count("\n") + 1
+        result.functions.append(FunctionInfo(
+            name=name, filepath=filepath, line_start=line_num,
+            line_end=line_num + 10, args=args, return_type=ret,
+        ))
+
+    # Methods: func (receiver Type) name(args)
+    for match in re.finditer(r"func\s+\(\s*\w+\s+\*?(\w+)\s*\)\s+(\w+)\s*\(([^)]*)\)", source):
+        class_name = match.group(1)
+        name = match.group(2)
+        args = [a.strip().split(" ")[0] for a in match.group(3).split(",") if a.strip()]
+        line_num = source[:match.start()].count("\n") + 1
+        result.functions.append(FunctionInfo(
+            name=name, filepath=filepath, line_start=line_num,
+            line_end=line_num + 10, args=args, is_method=True, class_name=class_name,
+        ))
+
+    # Structs
+    for match in re.finditer(r"type\s+(\w+)\s+struct\s*\{", source):
+        line_num = source[:match.start()].count("\n") + 1
+        result.classes.append(ClassInfo(
+            name=match.group(1), filepath=filepath, line_start=line_num, line_end=line_num + 10,
+        ))
+
+    # Interfaces
+    for match in re.finditer(r"type\s+(\w+)\s+interface\s*\{", source):
+        line_num = source[:match.start()].count("\n") + 1
+        result.classes.append(ClassInfo(
+            name=match.group(1), filepath=filepath, line_start=line_num, line_end=line_num + 10,
+        ))
+
+    # Imports
+    for match in re.finditer(r'"([^"]+)"', source[:500]):
+        result.imports.append(ImportInfo(module=match.group(1)))
+
+
+def _parse_rust(source, lines, filepath, result):
+    """Parse Rust functions, structs, enums, traits, impls."""
+    # Functions
+    for match in re.finditer(r"(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)(?:\s*->\s*(\S+))?", source):
+        name = match.group(1)
+        args = [a.strip().split(":")[0].strip() for a in match.group(2).split(",") if a.strip()]
+        ret = match.group(3) if match.group(3) else None
+        line_num = source[:match.start()].count("\n") + 1
+        result.functions.append(FunctionInfo(
+            name=name, filepath=filepath, line_start=line_num,
+            line_end=line_num + 10, args=args, return_type=ret,
+        ))
+
+    # Structs
+    for match in re.finditer(r"(?:pub\s+)?struct\s+(\w+)", source):
+        line_num = source[:match.start()].count("\n") + 1
+        result.classes.append(ClassInfo(
+            name=match.group(1), filepath=filepath, line_start=line_num, line_end=line_num + 10,
+        ))
+
+    # Enums
+    for match in re.finditer(r"(?:pub\s+)?enum\s+(\w+)", source):
+        line_num = source[:match.start()].count("\n") + 1
+        result.classes.append(ClassInfo(
+            name=match.group(1), filepath=filepath, line_start=line_num, line_end=line_num + 10,
+        ))
+
+    # Traits
+    for match in re.finditer(r"(?:pub\s+)?trait\s+(\w+)", source):
+        line_num = source[:match.start()].count("\n") + 1
+        result.classes.append(ClassInfo(
+            name=match.group(1), filepath=filepath, line_start=line_num, line_end=line_num + 10,
+        ))
+
+    # Use imports
+    for match in re.finditer(r"use\s+([\w:]+)", source):
+        result.imports.append(ImportInfo(module=match.group(1)))
+
+
+def _parse_java(source, lines, filepath, result):
+    """Parse Java/Kotlin classes, methods, interfaces."""
+    # Classes and interfaces
+    for match in re.finditer(r"(?:public|private|protected)?\s*(?:abstract\s+)?(?:class|interface)\s+(\w+)(?:\s+extends\s+(\w+))?(?:\s+implements\s+([\w,\s]+))?", source):
+        name = match.group(1)
+        bases = []
+        if match.group(2):
+            bases.append(match.group(2))
+        if match.group(3):
+            bases.extend([b.strip() for b in match.group(3).split(",")])
+        line_num = source[:match.start()].count("\n") + 1
+        result.classes.append(ClassInfo(
+            name=name, filepath=filepath, line_start=line_num, line_end=line_num + 20, bases=bases,
+        ))
+
+    # Methods
+    for match in re.finditer(r"(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(\w+)\s+(\w+)\s*\(([^)]*)\)\s*(?:throws\s+\w+)?\s*\{", source):
+        ret_type = match.group(1)
+        name = match.group(2)
+        if name in ("if", "for", "while", "switch", "catch", "class"):
+            continue
+        args = [a.strip().split(" ")[-1] for a in match.group(3).split(",") if a.strip()]
+        line_num = source[:match.start()].count("\n") + 1
+        result.functions.append(FunctionInfo(
+            name=name, filepath=filepath, line_start=line_num,
+            line_end=line_num + 10, args=args, return_type=ret_type, is_method=True,
+        ))
+
+    # Imports
+    for match in re.finditer(r"import\s+([\w.]+);", source):
+        result.imports.append(ImportInfo(module=match.group(1)))
+
+
+def _parse_c_cpp(source, lines, filepath, result):
+    """Parse C/C++/C# functions, classes, structs."""
+    # Functions (C-style)
+    for match in re.finditer(r"(?:static\s+)?(?:inline\s+)?(\w+)\s+(\w+)\s*\(([^)]*)\)\s*\{", source):
+        ret_type = match.group(1)
+        name = match.group(2)
+        if name in ("if", "for", "while", "switch", "catch", "return", "sizeof"):
+            continue
+        args = [a.strip().split(" ")[-1].replace("*", "").replace("&", "") for a in match.group(3).split(",") if a.strip()]
+        line_num = source[:match.start()].count("\n") + 1
+        result.functions.append(FunctionInfo(
+            name=name, filepath=filepath, line_start=line_num,
+            line_end=line_num + 10, args=args, return_type=ret_type,
+        ))
+
+    # Classes/structs
+    for match in re.finditer(r"(?:class|struct)\s+(\w+)(?:\s*:\s*(?:public|private|protected)?\s*(\w+))?", source):
+        bases = [match.group(2)] if match.group(2) else []
+        line_num = source[:match.start()].count("\n") + 1
+        result.classes.append(ClassInfo(
+            name=match.group(1), filepath=filepath, line_start=line_num, line_end=line_num + 10, bases=bases,
+        ))
+
+    # Includes
+    for match in re.finditer(r"#include\s*[<\"]([^>\"]+)[>\"]", source):
+        result.imports.append(ImportInfo(module=match.group(1)))
+
+
+def _parse_sql(source, lines, filepath, result):
+    """Parse SQL procedures, functions, tables."""
+    # Procedures/functions
+    for match in re.finditer(r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:PROCEDURE|FUNCTION)\s+(\w+)\s*\(([^)]*)\)", source, re.IGNORECASE):
+        name = match.group(1)
+        args = [a.strip().split(" ")[0] for a in match.group(2).split(",") if a.strip()]
+        line_num = source[:match.start()].count("\n") + 1
+        result.functions.append(FunctionInfo(
+            name=name, filepath=filepath, line_start=line_num, line_end=line_num + 10, args=args,
+        ))
+
+    # Tables
+    for match in re.finditer(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", source, re.IGNORECASE):
+        line_num = source[:match.start()].count("\n") + 1
+        result.classes.append(ClassInfo(
+            name=match.group(1), filepath=filepath, line_start=line_num, line_end=line_num + 10,
+        ))
+
+
+def _parse_ruby(source, lines, filepath, result):
+    """Parse Ruby classes, modules, methods."""
+    for match in re.finditer(r"def\s+(?:self\.)?(\w+)(?:\(([^)]*)\))?", source):
+        name = match.group(1)
+        args = [a.strip() for a in (match.group(2) or "").split(",") if a.strip()]
+        line_num = source[:match.start()].count("\n") + 1
+        result.functions.append(FunctionInfo(
+            name=name, filepath=filepath, line_start=line_num, line_end=line_num + 5, args=args,
+        ))
+
+    for match in re.finditer(r"(?:class|module)\s+(\w+)(?:\s*<\s*(\w+))?", source):
+        bases = [match.group(2)] if match.group(2) else []
+        line_num = source[:match.start()].count("\n") + 1
+        result.classes.append(ClassInfo(
+            name=match.group(1), filepath=filepath, line_start=line_num, line_end=line_num + 10, bases=bases,
+        ))
+
+
+def _parse_php(source, lines, filepath, result):
+    """Parse PHP classes, functions, methods."""
+    for match in re.finditer(r"(?:public|private|protected)?\s*(?:static\s+)?function\s+(\w+)\s*\(([^)]*)\)", source):
+        name = match.group(1)
+        args = [a.strip().split("=")[0].strip().split(" ")[-1].replace("$", "") for a in match.group(2).split(",") if a.strip()]
+        line_num = source[:match.start()].count("\n") + 1
+        result.functions.append(FunctionInfo(
+            name=name, filepath=filepath, line_start=line_num, line_end=line_num + 10, args=args,
+        ))
+
+    for match in re.finditer(r"class\s+(\w+)(?:\s+extends\s+(\w+))?", source):
+        bases = [match.group(2)] if match.group(2) else []
+        line_num = source[:match.start()].count("\n") + 1
+        result.classes.append(ClassInfo(
+            name=match.group(1), filepath=filepath, line_start=line_num, line_end=line_num + 10, bases=bases,
+        ))
