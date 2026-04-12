@@ -64,10 +64,13 @@ pip install -r requirements.txt
 ### Download a Model
 
 ```bash
-# Fast model (7B, 4.5 GB)
+# Fast model (7B, 4.5 GB, ~30s responses)
 python download_models.py qwen-7b
 
-# Quality model (32B, 18 GB, near-GPT-4 for code)
+# Quality model — RECOMMENDED (Qwen3 30B MoE, 18.6 GB, ~45s responses, near-Sonnet quality)
+python download_models.py qwen3-coder
+
+# Legacy quality model (Qwen2.5 32B, 18 GB, ~5min responses)
 python download_models.py qwen-32b
 ```
 
@@ -234,11 +237,12 @@ Your model literally gets smarter from your code every day. Every interaction au
 
 ### Auto Model Switching
 
-7B for simple queries (fast). 32B for complex reasoning (quality). Automatic based on query complexity.
+7B for simple queries (fast). Qwen3 30B MoE for complex reasoning (quality — only 3B params active = fast). Automatic based on query complexity.
 
 ```
 /model auto           # auto-switch by complexity
-/model qwen-32b       # manually use 32B
+/model qwen3-coder    # use Qwen3 Coder 30B MoE (recommended)
+/model quality        # always use best model
 /model fast           # always use fastest model
 /model list           # see available models
 ```
@@ -444,10 +448,10 @@ Each perspective catches different issues. The synthesis is better than any sing
 | Setup | RAM | Disk | Speed (tested) |
 |-------|-----|------|----------------|
 | 7B model (minimum) | 8 GB | 5 GB | ~25s/response (CPU) |
-| 7B + 32B (recommended) | 32 GB | 25 GB | 25s simple, 90s complex (CPU) |
-| With GPU (Vulkan) | 32 GB + 4GB VRAM | 25 GB | **7B: ~30s, 32B: ~7min** |
+| **Qwen3 30B MoE (recommended)** | **32 GB** | **19 GB** | **~45s/response (CPU)** |
+| 7B + Qwen2.5 32B (legacy) | 32 GB | 25 GB | 25s simple, 5min complex |
 
-**GPU Acceleration:** LeanAI auto-detects your GPU and offloads layers via Vulkan. Works on NVIDIA, AMD, and Intel GPUs. Dynamic layer allocation — 15 layers for 7B models, 4 layers for 32B models (adjusts to your VRAM).
+**GPU Acceleration:** LeanAI auto-detects your GPU and offloads layers via Vulkan. Works on NVIDIA, AMD, and Intel GPUs. Dynamic layer allocation — 15 layers for 7B models, 4 layers for 32B dense models. Qwen3 MoE runs CPU-only (MoE layers too large for consumer VRAM).
 
 ```bash
 # Enable GPU (one-time setup — requires Vulkan SDK)
@@ -516,7 +520,7 @@ leanai/
 | Refactor | `/refs <symbol>`, `/rename <old> <new>` |
 | Memory | `/remember <fact>`, `/profile`, `/sessions`, `/continue`, `/search <q>` |
 | Fine-Tune | `/finetune status`, `/finetune train`, `/finetune adapters`, `/finetune collect` |
-| Model | `/model list`, `/model auto`, `/model qwen-32b`, `/model download <x>` |
+| Model | `/model list`, `/model auto`, `/model qwen3-coder`, `/model download <x>` |
 | System | `/status`, `/speed`, `/complete <prefix>`, `/help`, `/quit` |
 | Novel | `/bisect <bug>`, `/fuzz <code>`, `/evolution narrative`, `/evolution insights` |
 | Debug | `/explain <error>`, `/test <function>`, `/diff`, `/security <file>` |
@@ -531,7 +535,7 @@ leanai/
 - **49+ CLI commands**
 - **32 API endpoints**
 - **3 interfaces** (CLI, Web UI, VS Code extension)
-- **2 models** with auto-switching (7B fast, 32B quality)
+- **2 models** with auto-switching (7B fast, Qwen3 30B MoE quality)
 - **6 novel features** (Code Verification, Cascade Inference, ReAct, KV Cache, AST Verification, Mixture of Agents)
 - **Vulkan GPU acceleration** (3.5x speedup tested)
 - **Two-pass code review** (language-specific bug detection)

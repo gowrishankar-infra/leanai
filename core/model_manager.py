@@ -49,9 +49,18 @@ class ModelInfo:
         models_dir = Path.home() / ".leanai" / "models"
         if not models_dir.exists():
             return False
-        # Match by model size key (e.g. "7b", "14b", "32b")
+        # Match by model family + size key
+        fname_lower = self.filename.lower()
+        # Qwen3-Coder-Next detection
+        if "qwen3" in fname_lower and "coder" in fname_lower:
+            for f in models_dir.glob("*.gguf"):
+                fl = f.name.lower()
+                if "qwen3" in fl and "coder" in fl:
+                    return True
+            return False
+        # Standard size key matching (7b, 14b, 32b)
         size_key = ""
-        for part in self.filename.lower().replace("-", "").replace("_", "").split("."):
+        for part in fname_lower.replace("-", "").replace("_", "").split("."):
             for s in ["7b", "14b", "32b"]:
                 if s in part:
                     size_key = s
@@ -71,8 +80,17 @@ class ModelInfo:
         models_dir = Path.home() / ".leanai" / "models"
         if not models_dir.exists():
             return self.full_path
+        # Qwen3-Coder-Next detection
+        fname_lower = self.filename.lower()
+        if "qwen3" in fname_lower and "coder" in fname_lower:
+            for f in models_dir.glob("*.gguf"):
+                fl = f.name.lower()
+                if "qwen3" in fl and "coder" in fl:
+                    return str(f)
+            return self.full_path
+        # Standard size key matching
         size_key = ""
-        for part in self.filename.lower().replace("-", "").replace("_", "").split("."):
+        for part in fname_lower.replace("-", "").replace("_", "").split("."):
             for s in ["7b", "14b", "32b"]:
                 if s in part:
                     size_key = s
@@ -119,6 +137,28 @@ MODEL_REGISTRY: Dict[str, ModelInfo] = {
         speed_label="slow",
         prompt_format="chatml",
         description="Near-GPT-4 for coding. ~90s on CPU. 92% HumanEval.",
+    ),
+    "qwen3-coder": ModelInfo(
+        name="Qwen3 Coder Next (80B MoE, 3B active)",
+        filename="Qwen3-Coder-Next-UD-Q3_K_XL.gguf",
+        repo_id="unsloth/Qwen3-Coder-Next-GGUF",
+        size_gb=30.0,
+        ram_needed_gb=32,
+        quality_score=97,
+        speed_label="fast",
+        prompt_format="chatml",
+        description="Near-Sonnet quality. 80B MoE but only 3B active = fast. Needs 32GB RAM.",
+    ),
+    "qwen3-coder-q4": ModelInfo(
+        name="Qwen3 Coder Next Q4 (80B MoE, best quality)",
+        filename="Qwen3-Coder-Next-UD-Q4_K_XL.gguf",
+        repo_id="unsloth/Qwen3-Coder-Next-GGUF",
+        size_gb=46.0,
+        ram_needed_gb=48,
+        quality_score=98,
+        speed_label="fast",
+        prompt_format="chatml",
+        description="Best local coding model. Needs 48GB RAM. Near-Sonnet 4.5 quality.",
     ),
 }
 

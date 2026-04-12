@@ -546,16 +546,24 @@ class LeanAIEngineV3:
             print(f"[LeanAI v3] Loading {model_name} ({self.n_threads} threads)...")
             # Dynamic GPU layers: 7B can fit more layers, 32B needs fewer
             model_name_lower = Path(self.model_path).name.lower()
-            if any(x in model_name_lower for x in ["32b", "33b", "34b", "70b"]):
-                gpu_layers = 4   # 32B model — only 4 layers fit in 4GB VRAM
+            is_qwen3_moe = "qwen3" in model_name_lower and "coder" in model_name_lower
+
+            if is_qwen3_moe:
+                gpu_layers = 0   # CPU-only: Qwen3 MoE layers too large for 4GB VRAM
+                ctx_size = 8192  # Start conservative, Qwen3 supports up to 262K
+            elif any(x in model_name_lower for x in ["32b", "33b", "34b", "70b"]):
+                gpu_layers = 4   # 32B dense — only 4 layers fit in 4GB VRAM
+                ctx_size = 4096
             elif any(x in model_name_lower for x in ["7b", "6b", "8b"]):
                 gpu_layers = 15  # 7B model — most layers fit in 4GB VRAM
+                ctx_size = 4096
             else:
-                gpu_layers = 8   # default
+                gpu_layers = 8
+                ctx_size = 4096
 
             self._model = Llama(
                 model_path=self.model_path,
-                n_ctx=4096, n_threads=self.n_threads, n_batch=1024,
+                n_ctx=ctx_size, n_threads=self.n_threads, n_batch=1024,
                 n_gpu_layers=gpu_layers, use_mmap=True, use_mlock=False,
                 logits_all=False, verbose=self.verbose,
             )
@@ -620,18 +628,22 @@ class LeanAIEngineV3:
             "12. Stop after answering."
         )
 
-        # Inject project context (from smart context — brain, git, sessions)
+        # ── Build user query with dynamic context ──────────────────
+        # Keep system prompt STATIC so llama.cpp can cache the KV prefix.
+        # Dynamic context (project, memory) goes into the user message.
+        user_with_context = ""
+
         if project_context:
-            system += (
-                "\n\nIMPORTANT — The user's ACTUAL project context is below. "
-                "Use it to give specific answers about THEIR code, not generic examples:\n"
-                + project_context[:3000]
+            user_with_context += (
+                "[PROJECT CONTEXT — use this to give specific answers about the user's ACTUAL code]\n"
+                + project_context[:3000] + "\n\n"
             )
 
-        # Inject memory context
         if memory_context:
             ctx = memory_context[:500].replace("\n", " ")
-            system += "\nMemory: " + ctx
+            user_with_context += f"[MEMORY] {ctx}\n\n"
+
+        user_with_context += query
 
         if self.prompt_format == "chatml":
             parts = ["<|im_start|>system\n" + system + "<|im_end|>\n"]
@@ -642,7 +654,7 @@ class LeanAIEngineV3:
                     parts.append("<|im_start|>user\n" + content + "<|im_end|>\n")
                 elif role == "assistant":
                     parts.append("<|im_start|>assistant\n" + content + "<|im_end|>\n")
-            parts.append("<|im_start|>user\n" + query + "<|im_end|>\n<|im_start|>assistant\n")
+            parts.append("<|im_start|>user\n" + user_with_context + "<|im_end|>\n<|im_start|>assistant\n")
         else:
             parts = ["<|system|>\n" + system + "<|end|>\n"]
             for msg in history[-4:]:
@@ -652,7 +664,7 @@ class LeanAIEngineV3:
                     parts.append("<|user|>\n" + content + "<|end|>\n")
                 elif role == "assistant":
                     parts.append("<|assistant|>\n" + content + "<|end|>\n")
-            parts.append("<|user|>\n" + query + "<|end|>\n<|assistant|>\n")
+            parts.append("<|user|>\n" + user_with_context + "<|end|>\n<|assistant|>\n")
 
         return "".join(parts)
 

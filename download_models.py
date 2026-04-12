@@ -5,8 +5,8 @@ Downloads AI models for local inference.
 
 Usage:
     python download_models.py                  # show available models
+    python download_models.py qwen3-coder      # download Qwen3 Coder 30B MoE (recommended)
     python download_models.py qwen-32b         # download the 32B model
-    python download_models.py qwen-14b         # download the 14B model
     python download_models.py all              # download all models
 """
 
@@ -27,9 +27,9 @@ def main():
         print("=" * 50)
         print(manager.list_models())
         print("\nUsage:")
-        print("  python download_models.py qwen-32b    # download 32B model (18 GB)")
-        print("  python download_models.py qwen-14b    # download 14B model (8.5 GB)")
-        print("  python download_models.py all          # download all models")
+        print("  python download_models.py qwen3-coder  # download Qwen3 30B MoE (18.6 GB, recommended)")
+        print("  python download_models.py qwen-32b     # download Qwen2.5 32B (18 GB)")
+        print("  python download_models.py all           # download all models")
         print("\nManual download commands:")
         for key in manager.models:
             if not manager.models[key].is_downloaded:
