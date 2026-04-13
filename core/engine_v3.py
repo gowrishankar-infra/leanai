@@ -570,7 +570,7 @@ class LeanAIEngineV3:
                 ctx_size = 4096  # Conservative context, supports up to 262K
             elif is_gemma4_moe:
                 gpu_layers = 0   # CPU-only: Gemma 4 MoE layers too large for 4GB VRAM
-                ctx_size = 8192  # Conservative context, supports up to 256K
+                ctx_size = 4096  # Reduced from 8192 for speed, supports up to 256K
             elif any(x in model_name_lower for x in ["32b", "33b", "34b", "70b"]):
                 gpu_layers = 4   # 32B dense — only 4 layers fit in 4GB VRAM
                 ctx_size = 4096

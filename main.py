@@ -1533,7 +1533,10 @@ def main():
 
             # Print response with formatting
             # Two-pass quality: if response contains code, run a review pass
-            if code_enhancer.should_review(user_input, text):
+            # Skip for high-quality models (Gemma 4, Qwen3.5) — they're good enough without it
+            model_name = os.path.basename(engine.model_path).lower() if engine.model_path else ""
+            is_high_quality_model = any(x in model_name for x in ["gemma", "qwen3.5", "qwen35"])
+            if not is_high_quality_model and code_enhancer.should_review(user_input, text):
                 print(f"  {C.DIM}Running code review...{C.RESET}", end="", flush=True)
                 text = code_enhancer.enhance(text, query=user_input)
                 print(f"\r{' ' * 40}\r", end="", flush=True)
