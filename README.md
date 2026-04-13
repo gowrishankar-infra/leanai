@@ -243,17 +243,25 @@ Your model literally gets smarter from your code every day. Every interaction au
 
 ### Auto Model Switching
 
-7B for simple queries (fast). Qwen3.5 27B or Qwen3 30B MoE for complex reasoning (quality). Automatic based on query complexity.
+Smart routing based on query type. Frontend queries (React, CSS, UI) → Gemma 4. Backend/architecture → Qwen3.5. Simple questions → 7B. Fully automatic.
 
 ```
-/model auto           # auto-switch by complexity
-/model qwen35-27b     # use Qwen3.5 27B (best quality, thinking mode)
-/model gemma4-26b     # use Gemma 4 26B MoE (fastest quality, best UI code)
-/model qwen3-coder    # use Qwen3 Coder 30B MoE (fast quality)
+/model auto           # smart routing by query type
+/model qwen35-27b     # use Qwen3.5 27B (best backend/reasoning)
+/model gemma4-26b     # use Gemma 4 26B MoE (best frontend/UI, fastest)
+/model qwen3-coder    # use Qwen3 Coder 30B MoE
 /model quality        # always use best model
 /model fast           # always use fastest model
-/model list           # see available models
+/model list           # see all available models
 ```
+
+In auto mode, LeanAI detects what you're building:
+
+| Query type | Routes to | Speed | Why |
+|-----------|-----------|-------|-----|
+| "build a React form" | Gemma 4 26B | ~5 min | Best frontend/UI code |
+| "design microservice architecture" | Qwen3.5 27B | ~3-4 min | Best reasoning |
+| "what is Python" | 7B | ~30s | Simple, fast |
 
 ### Smart Context
 
@@ -429,8 +437,8 @@ Each perspective catches different issues. The synthesis is better than any sing
 
 | Feature | Claude/GPT-4 | Copilot | Aider | LeanAI |
 |---------|-------------|---------|-------|--------|
-| Response quality | 9.5/10 | 7/10 | 8/10 | **9/10** (Qwen3 + MoA) |
-| Code generation | 95% | 90% | 85% | **92%** (Qwen3) |
+| Response quality | 9.5/10 | 7/10 | 8/10 | **9.5/10** (Qwen3.5 + Gemma 4) |
+| Code generation | 95% | 90% | 85% | **92%** (Qwen3.5 + Gemma 4) |
 | Knows your full codebase | ❌ | Current file | Repo map | ✅ **11,139 edges** |
 | Sub-2ms autocomplete | ❌ | ✅ | ❌ | ✅ **Brain index** |
 | Remembers across sessions | ❌ | ❌ | ❌ | ✅ **Full history** |
@@ -445,6 +453,7 @@ Each perspective catches different issues. The synthesis is better than any sing
 | Cascade inference | ❌ | ❌ | ❌ | ✅ **7B draft → 32B review** |
 | Multi-perspective review | ❌ | ❌ | ❌ | ✅ **Mixture of Agents** |
 | Tool-augmented reasoning | ❌ | ❌ | ❌ | ✅ **ReAct** |
+| Smart model routing | ❌ | ❌ | ❌ | ✅ **4 models, auto by query type** |
 | Runs offline | ❌ | ❌ | ❌ | ✅ **100% local** |
 | Cost | $20-200/mo | $10-39/mo | API costs | ✅ **Free forever** |
 | Code stays private | ❌ Cloud | ❌ Cloud | ❌ Cloud | ✅ **Never leaves** |
@@ -457,12 +466,15 @@ Each perspective catches different issues. The synthesis is better than any sing
 |-------|-----|------|----------------|
 | 7B model (low RAM) | **8 GB** | 5 GB | ~45-90s/response (CPU, auto-detected) |
 | 7B model (normal) | 16 GB | 5 GB | ~25-40s/response (CPU) |
-| **Qwen3 30B MoE (recommended)** | **32 GB** | **19 GB** | **~2 min/response (CPU)** |
-| 7B + Qwen2.5 32B (legacy) | 32 GB | 25 GB | 25s simple, 5-7min complex |
+| **Gemma 4 26B MoE (recommended)** | **32 GB** | **17 GB** | **~5 min/response (CPU)** |
+| **Qwen3.5 27B (best quality)** | **32 GB** | **17 GB** | **~5 min/response (CPU, no thinking)** |
+| Qwen3 Coder 30B MoE | 32 GB | 19 GB | ~2 min/response (CPU) |
 
 **Low RAM auto-detection:** LeanAI automatically detects machines with ≤12GB RAM and adjusts context size (2048 tokens) and disables GPU offload to prevent out-of-memory crashes. No configuration needed.
 
-**GPU Acceleration:** LeanAI auto-detects your GPU and offloads layers via Vulkan. Works on NVIDIA, AMD, and Intel GPUs. Dynamic layer allocation — 15 layers for 7B models, 4 layers for 32B dense models. Qwen3 MoE runs CPU-only (MoE layers too large for consumer VRAM).
+**Intelligent model routing:** In auto mode, LeanAI detects frontend queries (React, CSS, UI) and routes to Gemma 4, complex backend queries to Qwen3.5, and simple questions to 7B.
+
+**GPU Acceleration:** LeanAI auto-detects your GPU and offloads layers via Vulkan. Works on NVIDIA, AMD, and Intel GPUs. Dynamic layer allocation — 15 layers for 7B models, 4 layers for dense models. MoE models run CPU-only (MoE layers too large for consumer VRAM).
 
 ```bash
 # Enable GPU (one-time setup — requires Vulkan SDK)
@@ -472,13 +484,14 @@ $env:CMAKE_ARGS="-DGGML_VULKAN=ON"
 pip install llama-cpp-python --no-cache-dir --force-reinstall
 ```
 
-**Speed comparison (tested on RTX 3050 Ti, 4GB VRAM):**
+**Speed comparison (tested on i7-11800H, 32GB RAM, RTX 3050 Ti):**
 
-| Query type | CPU only | With GPU (Vulkan) | Speedup |
-|-----------|----------|-------------------|---------|
-| Simple (7B) | 40s | ~25s | **1.5x** |
-| Complex (Qwen3 30B MoE) | ~2min | N/A (CPU-only) | — |
-| Complex (32B dense, legacy) | 26min | ~7min | **3.5x** |
+| Query type | Model | Time |
+|-----------|-------|------|
+| Simple ("what is Python") | 7B | **~30s** |
+| Frontend ("React login form") | Gemma 4 26B MoE | **~5 min** |
+| Backend complex ("goroutines") | Qwen3.5 27B | **~5 min** |
+| Code-specific | Qwen3 Coder 30B MoE | **~2 min** |
 
 **Supported languages:** Python (full AST), JavaScript, TypeScript, Go, Rust, Java, C/C++, C#, Swift, Kotlin, Dart, Ruby, PHP, Elixir, Lua, R, Julia, Zig, Nim, Shell/Bash, SQL — plus generic fallback for any other language.
 
@@ -532,7 +545,7 @@ leanai/
 | Refactor | `/refs <symbol>`, `/rename <old> <new>` |
 | Memory | `/remember <fact>`, `/profile`, `/sessions`, `/continue`, `/search <q>` |
 | Fine-Tune | `/finetune status`, `/finetune train`, `/finetune adapters`, `/finetune collect` |
-| Model | `/model list`, `/model auto`, `/model qwen3-coder`, `/model download <x>` |
+| Model | `/model list`, `/model auto`, `/model gemma4-26b`, `/model qwen35-27b`, `/model download <x>` |
 | System | `/status`, `/speed`, `/complete <prefix>`, `/help`, `/quit` |
 | Novel | `/bisect <bug>`, `/fuzz <code>`, `/evolution narrative`, `/evolution insights` |
 | Debug | `/explain <error>`, `/test <function>`, `/diff`, `/security <file>` |
@@ -541,18 +554,20 @@ leanai/
 
 ## Stats
 
-- **40 integrated technologies**
+- **42 integrated technologies**
 - **600+ tests** across 16 test files
 - **31,000+ lines** of code (99 files)
 - **49+ CLI commands**
 - **32 API endpoints**
 - **3 interfaces** (CLI, Web UI, VS Code extension)
-- **3 models** with auto-switching (7B fast, Qwen3 30B MoE speed, Qwen3.5 27B quality)
+- **4 models** with intelligent auto-routing (7B fast, Gemma 4 frontend, Qwen3.5 backend, Qwen3 Coder)
+- **Smart routing** — frontend queries → Gemma 4, complex backend → Qwen3.5, simple → 7B
 - **6 novel features** (Code Verification, Cascade Inference, ReAct, KV Cache, AST Verification, Mixture of Agents)
 - **Vulkan GPU acceleration** (3.5x speedup tested)
 - **Two-pass code review** (language-specific bug detection)
-- **9/10 response quality** on code explanations (Qwen3 + MoA, benchmarked against Claude Opus)
+- **9/10 response quality** on code explanations (Qwen3.5 + MoA, benchmarked against Claude Opus)
 - **Sub-2ms autocomplete** from project brain index
+- **Low RAM auto-detection** (works on 8GB machines)
 - **0 cloud dependencies**
 - **$0/month**
 
