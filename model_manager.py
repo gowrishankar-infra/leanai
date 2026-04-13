@@ -263,6 +263,7 @@ COMPLEX_INDICATORS = {
     "promise", "callback", "closure", "prototype",               # JavaScript
     "generic", "trait", "enum", "macro",                         # Rust/Java
     "spring boot", "django", "flask", "express", "fastapi",      # Frameworks
+    "react", "vue", "angular", "next.js", "svelte",              # Frontend
 }
 
 SIMPLE_INDICATORS = {
@@ -484,16 +485,6 @@ class ModelManager:
 
         # Auto mode — use complexity classifier
         complexity = classify_complexity(query)
-        lower_query = query.lower()
-
-        # Frontend tasks → prefer Gemma 4 (better UI code, faster)
-        frontend_keywords = {"react", "vue", "angular", "svelte", "next.js", "css",
-                            "tailwind", "html", "frontend", "ui", "component", "form",
-                            "button", "modal", "navbar", "sidebar", "dashboard", "layout"}
-        is_frontend = any(kw in lower_query for kw in frontend_keywords)
-
-        if is_frontend and "gemma4-26b" in downloaded:
-            return "gemma4-26b"
 
         if complexity == "simple":
             self._stats["fast_count"] += 1

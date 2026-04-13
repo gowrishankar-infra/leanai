@@ -323,7 +323,7 @@ def main():
 ║                                                        ║
 ║ SYSTEM                                                 ║
 ║  /model             List/switch/download models        ║
-║  /model auto        Auto-switch (7B fast, 32B complex) ║
+║  /model auto        Auto-switch (7B/Gemma4/Qwen3.5)    ║
 ║  /model quality     Always use best model              ║
 ║  /model download X  Download a model                   ║
 ║  /status           Full system status                  ║
@@ -1008,7 +1008,7 @@ def main():
 
             elif subcmd == "auto":
                 model_mgr.set_mode("auto")
-                print("Mode set to AUTO — 7B for simple queries, 32B for complex ones.")
+                print("Mode set to AUTO — 7B simple, Gemma 4 medium, Qwen3.5 complex.")
 
             elif subcmd == "fast":
                 model_mgr.set_mode("fast")
@@ -1050,7 +1050,9 @@ def main():
                 print("  /model auto         Auto-switch by query complexity")
                 print("  /model fast         Always use fastest model")
                 print("  /model quality      Always use best model")
-                print("  /model qwen-32b     Switch to specific model")
+                print("  /model gemma4-26b   Use Gemma 4 (fast, reliable)")
+                print("  /model qwen35-27b   Use Qwen3.5 (best quality)")
+                print("  /model qwen3-coder  Use Qwen3 Coder 30B MoE")
                 print("  /model download X   Download a model")
 
         # ══════════════════════════════════════════════════════════

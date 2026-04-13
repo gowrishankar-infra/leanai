@@ -67,10 +67,16 @@ pip install -r requirements.txt
 # Fast model (7B, 4.5 GB, ~30s responses)
 python download_models.py qwen-7b
 
-# Quality model — RECOMMENDED (Qwen3 30B MoE, 18.6 GB, ~45s responses, near-Sonnet quality)
+# Best quality (Qwen3.5 27B, 16.7 GB, best dense model, thinking mode)
+python download_models.py qwen35-27b
+
+# Fastest quality (Gemma 4 26B MoE, 16.9 GB, rock solid, best for UI/frontend)
+python download_models.py gemma4-26b
+
+# Fast quality (Qwen3 30B MoE, 18.6 GB, ~2min responses)
 python download_models.py qwen3-coder
 
-# Legacy quality model (Qwen2.5 32B, 18 GB, ~5min responses)
+# Legacy (Qwen2.5 32B, 18 GB, ~5min responses)
 python download_models.py qwen-32b
 ```
 
@@ -237,11 +243,13 @@ Your model literally gets smarter from your code every day. Every interaction au
 
 ### Auto Model Switching
 
-7B for simple queries (fast). Qwen3 30B MoE for complex reasoning (quality — only 3B params active = fast). Automatic based on query complexity.
+7B for simple queries (fast). Qwen3.5 27B or Qwen3 30B MoE for complex reasoning (quality). Automatic based on query complexity.
 
 ```
 /model auto           # auto-switch by complexity
-/model qwen3-coder    # use Qwen3 Coder 30B MoE (recommended)
+/model qwen35-27b     # use Qwen3.5 27B (best quality, thinking mode)
+/model gemma4-26b     # use Gemma 4 26B MoE (fastest quality, best UI code)
+/model qwen3-coder    # use Qwen3 Coder 30B MoE (fast quality)
 /model quality        # always use best model
 /model fast           # always use fastest model
 /model list           # see available models
@@ -539,7 +547,7 @@ leanai/
 - **49+ CLI commands**
 - **32 API endpoints**
 - **3 interfaces** (CLI, Web UI, VS Code extension)
-- **2 models** with auto-switching (7B fast, Qwen3 30B MoE quality)
+- **3 models** with auto-switching (7B fast, Qwen3 30B MoE speed, Qwen3.5 27B quality)
 - **6 novel features** (Code Verification, Cascade Inference, ReAct, KV Cache, AST Verification, Mixture of Agents)
 - **Vulkan GPU acceleration** (3.5x speedup tested)
 - **Two-pass code review** (language-specific bug detection)

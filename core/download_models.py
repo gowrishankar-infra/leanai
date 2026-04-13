@@ -28,6 +28,7 @@ def main():
         print(manager.list_models())
         print("\nUsage:")
         print("  python download_models.py qwen35-27b   # download Qwen3.5 27B (16.7 GB, best quality)")
+        print("  python download_models.py gemma4-26b   # download Gemma 4 26B MoE (16.9 GB, fastest quality)")
         print("  python download_models.py qwen3-coder  # download Qwen3 30B MoE (18.6 GB, fast quality)")
         print("  python download_models.py qwen-32b     # download Qwen2.5 32B (18 GB, legacy)")
         print("  python download_models.py all           # download all models")

@@ -92,6 +92,7 @@ def _save_active_model(model_path: str):
 
 def _detect_prompt_format(model_path: str) -> str:
     name = Path(model_path).name.lower()
+    if "gemma" in name: return "gemma"
     if "qwen" in name: return "chatml"
     if "phi" in name: return "phi3"
     if "llama" in name: return "llama3"
@@ -547,6 +548,8 @@ class LeanAIEngineV3:
             # Dynamic GPU layers: 7B can fit more layers, 32B needs fewer
             model_name_lower = Path(self.model_path).name.lower()
             is_qwen3_moe = "qwen3" in model_name_lower and "coder" in model_name_lower
+            is_qwen35 = "qwen3.5" in model_name_lower or "qwen35" in model_name_lower
+            is_gemma4_moe = "gemma" in model_name_lower and ("26b" in model_name_lower or "a4b" in model_name_lower)
 
             # Auto-detect available RAM
             try:
@@ -562,6 +565,12 @@ class LeanAIEngineV3:
             if is_qwen3_moe:
                 gpu_layers = 0   # CPU-only: Qwen3 MoE layers too large for 4GB VRAM
                 ctx_size = 8192  # Start conservative, Qwen3 supports up to 262K
+            elif is_qwen35:
+                gpu_layers = 4   # Qwen3.5 27B dense — similar to 32B
+                ctx_size = 4096  # Conservative context, supports up to 262K
+            elif is_gemma4_moe:
+                gpu_layers = 0   # CPU-only: Gemma 4 MoE layers too large for 4GB VRAM
+                ctx_size = 8192  # Conservative context, supports up to 256K
             elif any(x in model_name_lower for x in ["32b", "33b", "34b", "70b"]):
                 gpu_layers = 4   # 32B dense — only 4 layers fit in 4GB VRAM
                 ctx_size = 4096
@@ -603,7 +612,8 @@ class LeanAIEngineV3:
                 "- Or: /model list  (to see available models)"
             )
         stop_tokens = ["<|im_end|>", "<|im_start|>", "<|user|>", "<|end|>",
-                       "<|assistant|>", "\nYou:", "\nHuman:", "\nUser:"]
+                       "<|assistant|>", "<end_of_turn>", "<start_of_turn>",
+                       "\nYou:", "\nHuman:", "\nUser:"]
         result = self._model(prompt, max_tokens=config.max_tokens,
             temperature=config.temperature, top_p=config.top_p,
             top_k=config.top_k, repeat_penalty=config.repeat_penalty,
@@ -611,6 +621,12 @@ class LeanAIEngineV3:
         text = result["choices"][0]["text"].strip()
         for token in stop_tokens:
             text = text.split(token)[0].strip()
+        # Strip <think>...</think> blocks (Qwen3.5 thinking mode output)
+        import re
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        # Also strip incomplete thinking blocks that didn't close
+        if "<think>" in text and "</think>" not in text:
+            text = text.split("<think>")[0].strip()
         return text
 
     def _build_prompt(self, query, memory_context, history, project_context=""):
@@ -661,6 +677,10 @@ class LeanAIEngineV3:
 
         user_with_context += query
 
+        # Disable thinking mode for Qwen3.5 to avoid 25-min think blocks
+        model_name_lower = Path(self.model_path).name.lower() if self.model_path else ""
+        is_qwen35 = "qwen3.5" in model_name_lower or "qwen35" in model_name_lower
+
         if self.prompt_format == "chatml":
             parts = ["<|im_start|>system\n" + system + "<|im_end|>\n"]
             for msg in history[-4:]:
@@ -670,7 +690,21 @@ class LeanAIEngineV3:
                     parts.append("<|im_start|>user\n" + content + "<|im_end|>\n")
                 elif role == "assistant":
                     parts.append("<|im_start|>assistant\n" + content + "<|im_end|>\n")
-            parts.append("<|im_start|>user\n" + user_with_context + "<|im_end|>\n<|im_start|>assistant\n")
+            if is_qwen35:
+                # Force empty think block so model skips thinking mode entirely
+                parts.append("<|im_start|>user\n" + user_with_context + "<|im_end|>\n<|im_start|>assistant\n<think>\n</think>\n")
+            else:
+                parts.append("<|im_start|>user\n" + user_with_context + "<|im_end|>\n<|im_start|>assistant\n")
+        elif self.prompt_format == "gemma":
+            parts = ["<start_of_turn>user\n" + system + "\n\n" + user_with_context + "<end_of_turn>\n"]
+            for msg in history[-4:]:
+                role = msg["role"]
+                content = msg["content"][:400] if len(msg["content"]) > 400 else msg["content"]
+                if role == "user":
+                    parts.append("<start_of_turn>user\n" + content + "<end_of_turn>\n")
+                elif role == "assistant":
+                    parts.append("<start_of_turn>model\n" + content + "<end_of_turn>\n")
+            parts.append("<start_of_turn>user\n" + user_with_context + "<end_of_turn>\n<start_of_turn>model\n")
         else:
             parts = ["<|system|>\n" + system + "<|end|>\n"]
             for msg in history[-4:]:
