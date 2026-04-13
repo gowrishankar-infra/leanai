@@ -548,6 +548,17 @@ class LeanAIEngineV3:
             model_name_lower = Path(self.model_path).name.lower()
             is_qwen3_moe = "qwen3" in model_name_lower and "coder" in model_name_lower
 
+            # Auto-detect available RAM
+            try:
+                import psutil
+                total_ram_gb = psutil.virtual_memory().total / (1024**3)
+                avail_ram_gb = psutil.virtual_memory().available / (1024**3)
+            except ImportError:
+                total_ram_gb = 32  # assume 32GB if psutil not available
+                avail_ram_gb = 24
+
+            low_ram = total_ram_gb <= 12  # 8GB or 12GB machines
+
             if is_qwen3_moe:
                 gpu_layers = 0   # CPU-only: Qwen3 MoE layers too large for 4GB VRAM
                 ctx_size = 8192  # Start conservative, Qwen3 supports up to 262K
@@ -555,8 +566,13 @@ class LeanAIEngineV3:
                 gpu_layers = 4   # 32B dense — only 4 layers fit in 4GB VRAM
                 ctx_size = 4096
             elif any(x in model_name_lower for x in ["7b", "6b", "8b"]):
-                gpu_layers = 15  # 7B model — most layers fit in 4GB VRAM
-                ctx_size = 4096
+                if low_ram:
+                    gpu_layers = 0    # no GPU offload on low RAM machines
+                    ctx_size = 2048   # smaller context to avoid OOM
+                    print(f"[LeanAI v3] Low RAM detected ({total_ram_gb:.0f}GB) — using ctx=2048, CPU-only")
+                else:
+                    gpu_layers = 15   # 7B model — most layers fit in 4GB VRAM
+                    ctx_size = 4096
             else:
                 gpu_layers = 8
                 ctx_size = 4096

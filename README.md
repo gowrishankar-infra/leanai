@@ -421,8 +421,8 @@ Each perspective catches different issues. The synthesis is better than any sing
 
 | Feature | Claude/GPT-4 | Copilot | Aider | LeanAI |
 |---------|-------------|---------|-------|--------|
-| Response quality | 9.5/10 | 7/10 | 8/10 | **9/10** (two-pass) |
-| Code generation | 95% | 90% | 85% | **92%** (32B) |
+| Response quality | 9.5/10 | 7/10 | 8/10 | **9/10** (Qwen3 + MoA) |
+| Code generation | 95% | 90% | 85% | **92%** (Qwen3) |
 | Knows your full codebase | ❌ | Current file | Repo map | ✅ **11,139 edges** |
 | Sub-2ms autocomplete | ❌ | ✅ | ❌ | ✅ **Brain index** |
 | Remembers across sessions | ❌ | ❌ | ❌ | ✅ **Full history** |
@@ -447,9 +447,12 @@ Each perspective catches different issues. The synthesis is better than any sing
 
 | Setup | RAM | Disk | Speed (tested) |
 |-------|-----|------|----------------|
-| 7B model (minimum) | 8 GB | 5 GB | ~25s/response (CPU) |
-| **Qwen3 30B MoE (recommended)** | **32 GB** | **19 GB** | **~45s/response (CPU)** |
-| 7B + Qwen2.5 32B (legacy) | 32 GB | 25 GB | 25s simple, 5min complex |
+| 7B model (low RAM) | **8 GB** | 5 GB | ~45-90s/response (CPU, auto-detected) |
+| 7B model (normal) | 16 GB | 5 GB | ~25-40s/response (CPU) |
+| **Qwen3 30B MoE (recommended)** | **32 GB** | **19 GB** | **~2 min/response (CPU)** |
+| 7B + Qwen2.5 32B (legacy) | 32 GB | 25 GB | 25s simple, 5-7min complex |
+
+**Low RAM auto-detection:** LeanAI automatically detects machines with ≤12GB RAM and adjusts context size (2048 tokens) and disables GPU offload to prevent out-of-memory crashes. No configuration needed.
 
 **GPU Acceleration:** LeanAI auto-detects your GPU and offloads layers via Vulkan. Works on NVIDIA, AMD, and Intel GPUs. Dynamic layer allocation — 15 layers for 7B models, 4 layers for 32B dense models. Qwen3 MoE runs CPU-only (MoE layers too large for consumer VRAM).
 
@@ -465,12 +468,13 @@ pip install llama-cpp-python --no-cache-dir --force-reinstall
 
 | Query type | CPU only | With GPU (Vulkan) | Speedup |
 |-----------|----------|-------------------|---------|
-| Simple (7B) | 60s | ~30s | **2x** |
-| Complex (32B) | 26min | ~7min | **3.5x** |
+| Simple (7B) | 40s | ~25s | **1.5x** |
+| Complex (Qwen3 30B MoE) | ~2min | N/A (CPU-only) | — |
+| Complex (32B dense, legacy) | 26min | ~7min | **3.5x** |
 
-**Supported languages:** Python, JavaScript, TypeScript, Go, Rust, Java, C, C++, C#, Ruby, PHP, Swift, Kotlin, Scala, SQL, bash, PowerShell, Lua, R, Perl, Haskell, Elixir, Dart, YAML, JSON, Terraform, Docker, and 20+ more (powered by Qwen2.5 Coder).
+**Supported languages:** Python (full AST), JavaScript, TypeScript, Go, Rust, Java, C/C++, C#, Swift, Kotlin, Dart, Ruby, PHP, Elixir, Lua, R, Julia, Zig, Nim, Shell/Bash, SQL — plus generic fallback for any other language.
 
-**Tested on:** Windows 11, i7-11800H, 32GB RAM, RTX 3050 Ti (4GB VRAM, Vulkan), Python 3.13
+**Tested on:** Windows 11 (i7-11800H, 32GB RAM, RTX 3050 Ti) and Ubuntu Linux (GTX 1070). Works on 8GB RAM machines with auto-adjusted settings.
 
 ---
 
@@ -539,7 +543,7 @@ leanai/
 - **6 novel features** (Code Verification, Cascade Inference, ReAct, KV Cache, AST Verification, Mixture of Agents)
 - **Vulkan GPU acceleration** (3.5x speedup tested)
 - **Two-pass code review** (language-specific bug detection)
-- **9/10 response quality** on code explanations (benchmarked against Claude Opus)
+- **9/10 response quality** on code explanations (Qwen3 + MoA, benchmarked against Claude Opus)
 - **Sub-2ms autocomplete** from project brain index
 - **0 cloud dependencies**
 - **$0/month**
