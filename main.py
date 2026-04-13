@@ -263,6 +263,7 @@ def main():
             print("Goodbye!")
             sessions.end_session(current_session.id)
             sessions.save_all()
+            speed.cache._save()  # Save response cache to disk
             break
 
         # ── Help ──────────────────────────────────────────────────
@@ -1294,10 +1295,13 @@ def main():
                 best_model = model_mgr.select_model(user_input)
 
                 # Check if cascade will handle this query (skip auto-switch to 32B)
+                # Skip cascade if auto-router selected a high-quality model (Gemma 4, Qwen3.5, Qwen3 Coder)
+                high_quality_selected = best_model in ("gemma4-26b", "qwen35-27b", "qwen3-coder")
                 will_cascade = (
                     cascade.enabled
                     and len(downloaded) >= 2
                     and cascade.should_cascade(user_input)
+                    and not high_quality_selected
                 )
 
                 if will_cascade:
@@ -1422,12 +1426,15 @@ def main():
 
                 # ── CASCADE INFERENCE ──────────────────────────────
                 # For complex queries: 7B drafts fast, 32B reviews and corrects
-                # Result: ~2-3 min instead of ~7 min for 32B from scratch
+                # Skip when Gemma 4, Qwen3.5, or Qwen3 Coder is loaded (they're good enough alone)
+                current_is_high_quality = any(x in os.path.basename(engine.model_path or "").lower()
+                    for x in ["gemma", "qwen3.5", "qwen35", "qwen3-coder-30b"])
                 use_cascade = (
                     cascade.enabled
                     and model_mgr.mode == "auto"
                     and len(model_mgr.get_downloaded_models()) >= 2
                     and cascade.should_cascade(user_input)
+                    and not current_is_high_quality
                 )
 
                 if use_cascade:
@@ -1602,6 +1609,7 @@ def main():
 
             # Speed: Cache this response for future
             speed.cache_response(user_input, text, confidence)
+            speed.cache._save()  # Save immediately so cache persists across restarts
 
             # Continuous fine-tuning: collect high-quality pairs
             ft_pipeline.add_example(

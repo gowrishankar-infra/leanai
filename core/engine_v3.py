@@ -621,12 +621,27 @@ class LeanAIEngineV3:
         text = result["choices"][0]["text"].strip()
         for token in stop_tokens:
             text = text.split(token)[0].strip()
-        # Strip <think>...</think> blocks (Qwen3.5 thinking mode output)
+        # Strip thinking blocks from all models
         import re
+        # Qwen3.5: <think>...</think>
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        # Also strip incomplete thinking blocks that didn't close
         if "<think>" in text and "</think>" not in text:
             text = text.split("<think>")[0].strip()
+        # Gemma 4: <|channel>thought ... <channel|> or <|channel>-thought <channel|>
+        text = re.sub(r"<\|channel>.*?<channel\|>", "", text, flags=re.DOTALL).strip()
+        text = re.sub(r"<\|channel>.*?<\|channel>", "", text, flags=re.DOTALL).strip()
+        # Strip any remaining channel tags and content before actual answer
+        if "<|channel>" in text and "<channel|>" not in text:
+            text = text.split("<|channel>")[-1].strip()
+            # Remove the thought content up to the first heading or actual content
+            lines = text.split("\n")
+            clean_lines = []
+            found_content = False
+            for line in lines:
+                if line.strip().startswith(("###", "▸", "**", "1.", "2.", "-")) or found_content:
+                    found_content = True
+                    clean_lines.append(line)
+            text = "\n".join(clean_lines).strip() if clean_lines else text
         return text
 
     def _build_prompt(self, query, memory_context, history, project_context=""):
@@ -644,11 +659,19 @@ class LeanAIEngineV3:
             "security (injection/XSS/secrets), resource cleanup, thread safety, performance.\n"
             "   Python: type hints, bare except, mutable defaults.\n"
             "   JS/TS: ==/===, async errors, prototype pollution.\n"
-            "   Go: unchecked err, goroutine leaks, missing defer.\n"
-            "   Rust: unwrap without handling, unsafe blocks.\n"
-            "   Java: null pointers, resource leaks, missing equals/hashCode.\n"
+            "   Go: unchecked err, goroutine leaks, missing defer, GMP scheduler, GOMAXPROCS, pprof.\n"
+            "   Rust: unwrap without handling, unsafe blocks, lifetime issues.\n"
+            "   Java/Kotlin: null pointers, resource leaks, missing equals/hashCode, coroutine scope.\n"
+            "   Swift: force unwrap (!), retain cycles, missing weak/unowned, async/await.\n"
+            "   Dart/Flutter: missing dispose(), BuildContext leaks, setState after dispose.\n"
+            "   Ruby: monkey patching risks, N+1 queries, missing begin/rescue.\n"
+            "   PHP: SQL injection, unescaped output, missing type declarations.\n"
+            "   Elixir: unhandled GenServer calls, missing supervision trees, pattern match gaps.\n"
+            "   Shell/Bash: unquoted variables, missing set -euo pipefail, injection via eval.\n"
             "   SQL: injection, missing indexes, N+1, no LIMIT.\n"
-            "   C/C++: buffer overflow, memory leaks, bounds checks.\n"
+            "   C/C++: buffer overflow, memory leaks, bounds checks, use-after-free.\n"
+            "   ANY OTHER language: check for null safety, error handling, resource cleanup, "
+            "input validation, thread safety, and idiomatic patterns for that language.\n"
             "   CI/CD: test step, Dockerfile, auth, tag strategy, secrets.\n"
             "   API: auth, rate limiting, validation, status codes, CORS.\n"
             "   DB: injection, connection pooling, indexes, transactions.\n"
@@ -657,7 +680,28 @@ class LeanAIEngineV3:
             "10. For USER's project: use THEIR actual code, class names, file paths.\n"
             "11. Self-review before finishing: improved version? validation? error handling? "
             "edge cases? security? missing deps?\n"
-            "12. Stop after answering."
+            "12. Stop after answering.\n"
+            "13. PRODUCTION PATTERNS — always include when relevant:\n"
+            "   React/Frontend: AbortController for cleanup on unmount, rate limit submit attempts, "
+            "password visibility toggle, CSRF token handling, loading/error/success states.\n"
+            "   Backend/API: request timeouts, graceful shutdown, health checks, retry with backoff.\n"
+            "   Go: context.WithTimeout, errgroup, channel direction (chan<-), defer cleanup.\n"
+            "   General: include a brief unit test example for key functions.\n"
+            "14. Before finishing, ask: would a senior engineer approve this for production? "
+            "If not, add what's missing.\n"
+            "15. TRADEOFFS & ANTI-PATTERNS:\n"
+            "   For complex tasks: briefly mention 2 approaches with tradeoffs before showing code.\n"
+            "   Always say WHY NOT for common bad approaches (e.g., 'Don't use localStorage for tokens "
+            "because XSS can steal them. Use httpOnly cookies instead.').\n"
+            "   Mention deployment considerations: env variables, Docker, CI/CD implications.\n"
+            "16. THINK MULTI-FILE:\n"
+            "   Consider how this code fits into a larger project. Mention what other files would need "
+            "changes (routes, middleware, config, tests). Show file paths.\n"
+            "17. DEEP EXPLANATIONS:\n"
+            "   For 'explain' or 'how does X work' queries: go beyond surface syntax.\n"
+            "   Explain the underlying mechanism (e.g., Go's GMP scheduler, React's reconciliation, "
+            "Python's GIL, event loop internals, memory layout).\n"
+            "   Include a practical benchmark or performance comparison when relevant."
         )
 
         # ── Build user query with dynamic context ──────────────────
