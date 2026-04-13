@@ -1493,30 +1493,70 @@ def main():
                         resp = draft_resp
                 else:
                     # ── STANDARD GENERATION ────────────────────────
-                    # Auto-recovery wrapped generation
-                    def do_generate(max_tokens, **kw):
-                        return engine.generate(user_input,
-                                               config=GenerationConfig(max_tokens=max_tokens),
-                                               project_context=enriched_context)
+                    # For high-quality models: use STREAMING (tokens appear as generated)
+                    model_basename = os.path.basename(engine.model_path or "").lower()
+                    use_streaming = any(x in model_basename for x in ["qwen3.5", "qwen35", "qwen3-coder"])
 
-                    def do_fallback(max_tokens, **kw):
-                        return engine.generate(user_input,
-                                               config=GenerationConfig(max_tokens=max(max_tokens // 2, 128)),
-                                               project_context=enriched_context)
+                    if use_streaming:
+                        # Build prompt same way engine does
+                        mem_ctx = engine.memory.prepare_context(user_input)
+                        history = engine.memory.working.get_context_window(max_tokens=512)
+                        prompt = engine._build_prompt(user_input, mem_ctx, history,
+                                                       project_context=enriched_context)
+                        config = GenerationConfig(max_tokens=smart_tokens)
 
-                    rec_result = recovery.safe_generate(
-                        generate_fn=do_generate,
-                        max_tokens=smart_tokens,
-                        fallback_fn=do_fallback,
-                    )
+                        # Print header and stream tokens
+                        print_response_header()
+                        import sys
+                        streamed_text = engine.generate_streaming(
+                            prompt, config,
+                            callback=lambda token: (sys.stdout.write(token), sys.stdout.flush())
+                        )
+                        print()  # newline after streaming
 
-                    if rec_result.success:
-                        resp = rec_result.text  # this is the LeanAIResponse object
-                        if rec_result.recovered:
-                            print(f"  [Recovery] Recovered: {rec_result.recovery_note}")
+                        # Record in memory
+                        engine.memory.record_exchange(user_input, streamed_text)
+
+                        # Create a simple response object
+                        class StreamResp:
+                            def __init__(self, t):
+                                self.text = t
+                                self.confidence = 0.72
+                                self.confidence_label = "Moderate"
+                                self.tier_used = "stream"
+                                self.latency_ms = (time.time() - start) * 1000
+                                self.answered_from_memory = False
+                                self.memory_context_used = bool(mem_ctx)
+                                self.verified = False
+                                self.code_executed = False
+                                self.code_passed = False
+                                self.code_output = ""
+                        resp = StreamResp(streamed_text)
                     else:
-                        print(f"\nError: {rec_result.error}")
-                        continue
+                        # Non-streaming fallback (7B, legacy 32B)
+                        def do_generate(max_tokens, **kw):
+                            return engine.generate(user_input,
+                                                   config=GenerationConfig(max_tokens=max_tokens),
+                                                   project_context=enriched_context)
+
+                        def do_fallback(max_tokens, **kw):
+                            return engine.generate(user_input,
+                                                   config=GenerationConfig(max_tokens=max(max_tokens // 2, 128)),
+                                                   project_context=enriched_context)
+
+                        rec_result = recovery.safe_generate(
+                            generate_fn=do_generate,
+                            max_tokens=smart_tokens,
+                            fallback_fn=do_fallback,
+                        )
+
+                        if rec_result.success:
+                            resp = rec_result.text
+                            if rec_result.recovered:
+                                print(f"  [Recovery] Recovered: {rec_result.recovery_note}")
+                        else:
+                            print(f"\nError: {rec_result.error}")
+                            continue
             except Exception as e:
                 print(f"\nError: {e}")
                 continue
@@ -1552,8 +1592,11 @@ def main():
             if code_verifier.should_verify(user_input, text):
                 text = code_verifier.verify(text, query=user_input)
 
-            print_response_header()
-            print(format_response(text))
+            # Print response (skip if already streamed)
+            was_streamed = getattr(resp, "tier_used", "") == "stream"
+            if not was_streamed:
+                print_response_header()
+                print(format_response(text))
 
             # Code execution results
             if code_exec:

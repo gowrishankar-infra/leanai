@@ -644,6 +644,46 @@ class LeanAIEngineV3:
             text = "\n".join(clean_lines).strip() if clean_lines else text
         return text
 
+    def generate_streaming(self, prompt, config, callback=None):
+        """Generate with streaming — calls callback(token) for each token."""
+        self._load_model()
+        if self._model is None:
+            if callback:
+                callback("Model not loaded. Run: python setup_leanai.py")
+            return "Model not loaded."
+        stop_tokens = ["<|im_end|>", "<|im_start|>", "<|user|>", "<|end|>",
+                       "<|assistant|>", "<end_of_turn>", "<start_of_turn>",
+                       "\nYou:", "\nHuman:", "\nUser:"]
+        full_text = ""
+        in_thinking = False
+        for chunk in self._model(prompt, max_tokens=config.max_tokens,
+                temperature=config.temperature, top_p=config.top_p,
+                top_k=config.top_k, repeat_penalty=config.repeat_penalty,
+                stop=stop_tokens, echo=False, stream=True):
+            token = chunk["choices"][0]["text"]
+            full_text += token
+            # Skip thinking/channel blocks
+            if "<think>" in full_text or "<|channel>" in full_text:
+                in_thinking = True
+            if "</think>" in full_text or "<channel|>" in full_text:
+                in_thinking = False
+                continue
+            if not in_thinking and callback:
+                # Don't print special tokens
+                if not any(t in token for t in ["<think>", "</think>", "<|channel>", "<channel|>"]):
+                    callback(token)
+        # Clean final text
+        import re
+        full_text = re.sub(r"<think>.*?</think>", "", full_text, flags=re.DOTALL).strip()
+        full_text = re.sub(r"<\|channel>.*?<channel\|>", "", full_text, flags=re.DOTALL).strip()
+        if "<|channel>" in full_text:
+            lines = full_text.split("\n")
+            clean = [l for l in lines if l.strip().startswith(("###", "▸", "**", "1.", "2.", "-")) or ":" in l[:30]]
+            full_text = "\n".join(clean).strip() if clean else full_text
+        for token in stop_tokens:
+            full_text = full_text.split(token)[0].strip()
+        return full_text
+
     def _build_prompt(self, query, memory_context, history, project_context=""):
         system = (
             "You are LeanAI — a senior software engineer AI. Clear, accurate, insightful.\n\n"
