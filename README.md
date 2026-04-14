@@ -17,7 +17,7 @@ Every AI coding tool today shares the same flaw: they see your code for the firs
 
 LeanAI is different:
 
-- **It knows your entire codebase.** 1,879 functions mapped, 11,963 dependency edges tracked, full AST analysis. When you say "add authentication to the API," it already knows every route, every model, every middleware.
+- **It knows your entire codebase.** 1,969 functions mapped, 12,860 dependency edges tracked, full AST analysis. When you say "add authentication to the API," it already knows every route, every model, every middleware.
 
 - **It never forgets.** Session 1's decisions are available in session 5. Every conversation is permanently searchable. Your name, your preferences, your project history — all remembered.
 
@@ -459,6 +459,57 @@ You: review the code in api/server.py
 
 Each perspective catches different issues. The synthesis is better than any single pass.
 
+### AGAC: AST-Grounded Auto-Correction *(novel — no other tool does this)*
+
+After every response, AGAC scans code blocks and auto-corrects hallucinated identifiers against your project's actual AST. Only fixes obvious typos (0.85 similarity threshold) — never touches prose, comments, or standard library names.
+
+```
+Model generated:   from core.services import process_user
+AGAC auto-fixed:   from core.server import process_user
+                   ↑ core/services.py doesn't exist, core/server.py does
+
+▸ Code Verification (checked against your project)
+  ✓ process() in agac.py — used by main, agac.py
+  ✓ train() in finetune_runner.py — used by main, TestFineTuneRunner
+```
+
+**What makes this better than Opus:** Opus 4.6 would have left `core.services` in the code — it has no AST to check against. Your copy-pasted code would fail with `ModuleNotFoundError`. LeanAI's code works on the first paste.
+
+### DFSG: Dynamic Few-Shot Grounding *(novel — no other tool does this)*
+
+Before generating code, LeanAI automatically finds the most similar function in YOUR codebase and injects it as a few-shot example. The model then generates code that matches YOUR naming conventions, error handling patterns, and docstring style.
+
+```
+You: write a function to validate API tokens
+
+DFSG finds: validate_query() in core/router.py (your existing validator)
+Injects into prompt: "Follow this pattern from your codebase..."
+
+→ Model generates validate_token() with YOUR exact style:
+  - Same error handling pattern
+  - Same return types
+  - Same docstring format
+  - Same naming conventions
+```
+
+**What makes this better than Opus:** Opus writes correct but GENERIC code. LeanAI writes code that fits YOUR project without modification — because it learned from YOUR actual code, not from StackOverflow.
+
+### DualPipe: Asymmetric GPU/CPU Speculative Decoding *(experimental)*
+
+Loads the 7B model on GPU and the 27B on CPU simultaneously. The 7B drafts tokens at GPU speed, the 27B verifies them on CPU. Both models stay loaded via mmap. Opt-in only:
+
+```
+/dualpipe on     # enable (loads both models, ~21GB RAM)
+/dualpipe off    # disable
+/dualpipe        # show stats
+```
+
+Currently experimental — requires same-family models for optimal results.
+
+### Repetition Safety Net
+
+Auto-detects and truncates repetitive model output (`produce produce produce...` or `step-step-step-step...`). Runs on ALL models at ALL levels — engine, streaming, MoA, DualPipe. Catches word-level, phrase-level, and character-pattern repetition.
+
 ---
 
 ## Architecture
@@ -630,16 +681,16 @@ leanai/
 
 ## Stats
 
-- **42 integrated technologies**
+- **45 integrated technologies**
 - **600+ tests** across 16 test files
-- **33,000+ lines** of code (101 files)
+- **36,000+ lines** of code (106 files)
 - **50+ CLI commands**
 - **32 API endpoints**
 - **3 interfaces** (CLI, Web UI, VS Code extension)
 - **4 models** with intelligent auto-routing (7B fast, Gemma 4 frontend, Qwen3.5 backend, Qwen3 Coder)
 - **Smart routing** — frontend queries → Gemma 4, complex backend → Qwen3.5, simple → 7B
 - **Streaming output** — tokens appear word-by-word for Qwen models
-- **6 novel features** (Code Verification, Cascade Inference, ReAct, KV Cache, AST Verification, Mixture of Agents)
+- **10 novel features** (AGAC, DFSG, CodeEcho, DualPipe, Code Verification, Cascade, ReAct, KV Cache, AST Verification, MoA)
 - **Vulkan GPU acceleration** (3.5x speedup tested)
 - **21-rule system prompt** — Opus-level output quality (93% of Claude Opus 4.6)
 - **Two-pass code review** (language-specific, 20+ languages)
@@ -651,6 +702,9 @@ leanai/
 - **Custom data directory** — LEANAI_HOME env var for non-standard installs
 - **File-aware queries** — mention a filename and LeanAI reads it automatically
 - **Project onboarding** — `/onboard` generates instant AI summary of any codebase
+- **AGAC auto-correction** — hallucinated identifiers fixed against AST (0.85 threshold, code-only)
+- **DFSG few-shot grounding** — YOUR code patterns injected as examples before generation
+- **Repetition safety net** — auto-truncates garbage from any model
 - **0 cloud dependencies**
 - **$0/month**
 

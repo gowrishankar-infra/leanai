@@ -713,6 +713,7 @@ System status, speed optimization, and help.
 | `/status` | Full system status (model, memory, sessions, git) |
 | `/speed` | Speed optimization report + cache stats |
 | `/echo` | CodeEcho acceleration stats (source-grounded speculative decoding) |
+| `/dualpipe` | DualPipe speculative decoding (on/off/stats) |
 | `/help` | Show available commands |
 | `/quit` | Exit LeanAI |
 
@@ -732,6 +733,13 @@ Shows: cache hit rate, GPU detection, recommended optimizations.
 /echo
 ```
 Shows: CodeEcho acceleration stats — total tokens echoed, echo events, echo ratio, estimated speedup. CodeEcho detects when the model reproduces source code and batch-injects those tokens at prefill speed instead of generating them one by one.
+
+```
+/dualpipe on
+/dualpipe off
+/dualpipe
+```
+Controls DualPipe asymmetric speculative decoding. Loads 7B on GPU (draft) and 27B on CPU (verify) simultaneously. `/dualpipe` shows stats including acceptance rate, effective tok/s, and speedup. Experimental — requires both 7B and 27B models downloaded.
 
 ---
 

@@ -19,7 +19,7 @@ PROJECT HISTORY
 ===============
 - Architecture designed and directed by Gowri Shankar
 - Development started: April 2025
-- 43 integrated technologies, 600+ tests, 34,000+ lines, 4 models with intelligent routing, streaming output, CodeEcho acceleration, LEANAI_HOME/LEANAI_MODELS support
+- 45 integrated technologies, 600+ tests, 36,000+ lines, 4 models with intelligent routing, streaming output, AGAC auto-correction, DFSG few-shot grounding, CodeEcho, DualPipe, repetition safety, LEANAI_HOME/LEANAI_MODELS support
 - Built on: Windows 11, i7-11800H, 32GB RAM, RTX 3050 Ti
 - Models: Qwen2.5 Coder 7B, Qwen3 Coder 30B MoE, Qwen3.5 27B, Gemma 4 26B MoE
 
