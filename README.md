@@ -105,15 +105,23 @@ python run_server.py
 # See vscode-extension/README.md
 ```
 
-### First Thing to Do
+### ⚡ First Thing to Do (important — don't skip this)
+
+Without these steps, LeanAI is just a generic chatbot. WITH these steps, it knows your entire codebase:
 
 ```
-/brain .              # scan your project (builds dependency graph)
-/onboard              # get an AI-generated project summary
-/model auto           # auto-switch models by query type
+/brain .              # scan your project — maps every function, class, import
+/model auto           # auto-routes: frontend → Gemma 4, backend → Qwen3.5, simple → 7B
 ```
 
-Then just ask questions about your code. LeanAI knows your entire project.
+Now ask about YOUR code:
+```
+explain how the auth system works
+write a function to validate user tokens
+review the code in server.py
+```
+
+LeanAI will reference YOUR actual functions, correct wrong imports against YOUR AST, and inject YOUR coding patterns as examples. **This is where it beats cloud AI — try it on YOUR project.**
 
 ---
 

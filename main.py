@@ -374,6 +374,17 @@ def main():
     )
     print_commands()
 
+    # First-run guidance — show if brain hasn't been scanned yet
+    if not brain:
+        print()
+        print(f"  {C.fg(220)}{'━' * 58}{C.RESET}")
+        print(f"  {C.fg(220)}⚡ FIRST TIME? Run these 2 commands to unlock LeanAI's power:{C.RESET}")
+        print(f"  {C.fg(220)}  1. /brain .        → scans your project (AST + dependency graph){C.RESET}")
+        print(f"  {C.fg(220)}  2. /model auto     → smart 4-model routing by query type{C.RESET}")
+        print(f"  {C.fg(220)}  Then ask about YOUR code — that's where LeanAI beats cloud AI.{C.RESET}")
+        print(f"  {C.fg(220)}{'━' * 58}{C.RESET}")
+        print()
+
     # ══════════════════════════════════════════════════════════════
     # COMMAND LOOP
     # ══════════════════════════════════════════════════════════════
