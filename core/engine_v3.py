@@ -611,6 +611,16 @@ class LeanAIEngineV3:
                 "- Run: python setup_leanai.py  (downloads model automatically)\n"
                 "- Or: /model list  (to see available models)"
             )
+        # Context overflow protection: truncate prompt if too long
+        # Rough estimate: 1 token ≈ 4 chars. Leave room for max_tokens output.
+        ctx_limit = getattr(self, '_ctx_size', 4096) or 4096
+        max_prompt_tokens = ctx_limit - config.max_tokens - 100  # 100 token safety margin
+        max_prompt_chars = max(max_prompt_tokens * 4, 2000)
+        if len(prompt) > max_prompt_chars:
+            # Truncate the middle (keep start + end for system prompt + query)
+            keep_start = max_prompt_chars // 2
+            keep_end = max_prompt_chars // 2
+            prompt = prompt[:keep_start] + "\n\n[... context truncated for length ...]\n\n" + prompt[-keep_end:]
         stop_tokens = ["<|im_end|>", "<|im_start|>", "<|user|>", "<|end|>",
                        "<|assistant|>", "<end_of_turn>", "<start_of_turn>",
                        "\nYou:", "\nHuman:", "\nUser:"]
@@ -654,6 +664,12 @@ class LeanAIEngineV3:
         stop_tokens = ["<|im_end|>", "<|im_start|>", "<|user|>", "<|end|>",
                        "<|assistant|>", "<end_of_turn>", "<start_of_turn>",
                        "\nYou:", "\nHuman:", "\nUser:"]
+        # Context overflow protection
+        ctx_limit = getattr(self, '_ctx_size', 4096) or 4096
+        max_prompt_chars = max((ctx_limit - config.max_tokens - 100) * 4, 2000)
+        if len(prompt) > max_prompt_chars:
+            keep = max_prompt_chars // 2
+            prompt = prompt[:keep] + "\n\n[... truncated ...]\n\n" + prompt[-keep:]
         full_text = ""
         in_thinking = False
         buffer = ""  # Buffer to detect think/channel tags

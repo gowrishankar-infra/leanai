@@ -104,7 +104,7 @@ class MixtureOfAgents:
             
             user_prompt = query
             if context:
-                user_prompt = f"[Project context]\n{context[:800]}\n\n{query}"
+                user_prompt = f"[Project context]\n{context[:3000]}\n\n{query}"
 
             try:
                 result = self.model_fn(persona_prompt, user_prompt)
@@ -130,7 +130,7 @@ class MixtureOfAgents:
 
         perspectives_text = ""
         for p in perspectives:
-            perspectives_text += f"\n\n--- {p['persona'].upper()} EXPERT ---\n{p['analysis'][:600]}"
+            perspectives_text += f"\n\n--- {p['persona'].upper()} EXPERT ---\n{p['analysis'][:1500]}"
 
         synthesis_prompt = (
             f"Original question: {query}\n\n"

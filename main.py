@@ -1418,7 +1418,7 @@ def main():
                     if os.path.exists(full):
                         try:
                             with open(full, 'r', encoding='utf-8', errors='ignore') as _f:
-                                content = _f.read()[:4000]
+                                content = _f.read()[:8000]
                             file_content_block += f"\n\n[FILE CONTENT: {fpath}]\n{content}\n[END FILE]\n"
                             print(f"  {C.DIM}📄 Reading {fpath} ({len(content)} chars){C.RESET}")
                         except Exception:
