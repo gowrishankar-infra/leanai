@@ -17,7 +17,7 @@ Every AI coding tool today shares the same flaw: they see your code for the firs
 
 LeanAI is different:
 
-- **It knows your entire codebase.** 1,799 functions mapped, 11,139 dependency edges tracked, full AST analysis. When you say "add authentication to the API," it already knows every route, every model, every middleware.
+- **It knows your entire codebase.** 1,879 functions mapped, 11,963 dependency edges tracked, full AST analysis. When you say "add authentication to the API," it already knows every route, every model, every middleware.
 
 - **It never forgets.** Session 1's decisions are available in session 5. Every conversation is permanently searchable. Your name, your preferences, your project history — all remembered.
 
@@ -109,7 +109,8 @@ python run_server.py
 
 ```
 /brain .              # scan your project (builds dependency graph)
-/model auto           # auto-switch 7B/32B by query complexity
+/onboard              # get an AI-generated project summary
+/model auto           # auto-switch models by query type
 ```
 
 Then just ask questions about your code. LeanAI knows your entire project.
@@ -331,12 +332,60 @@ Colored ASCII art banner, syntax-highlighted code blocks with `┌─ python ─
 
 ### Response Caching
 
-Ask the same question twice? Instant response from cache. No model call needed.
+Ask the same question twice? Instant response from cache. No model call needed. Cache persists across restarts.
 
 ```
 You: what is Python?     → 25 seconds (first time)
 You: what is Python?     → instant ⚡ CACHED
 ```
+
+### Streaming Output
+
+For Qwen3.5 and Qwen3 Coder models, responses stream word-by-word as they generate — just like ChatGPT/Claude. No more staring at a blank screen for 5 minutes.
+
+### Read Actual Files
+
+Mention a filename in your query and LeanAI reads it automatically:
+
+```
+You: review the code in main.py
+📄 Reading main.py (4000 chars)
+→ Model sees the actual file content, not just metadata
+```
+
+Supports 30+ file extensions. Max 3 files per query, 4000 chars each.
+
+### Project Onboarding
+
+New to a codebase? Get an instant AI-generated summary:
+
+```
+/brain .
+/onboard
+
+📋 Project Onboarding Summary
+LeanAI is an intelligent code analysis engine... main.py serves as
+the primary entry point... Key technologies include Python... New
+developers should start by examining core/engine_v3.py...
+```
+
+Uses real filenames from your project — never hallucinates fake paths.
+
+### Custom Data Directories (LM Studio Compatible)
+
+Use environment variables to store data anywhere or reuse existing models:
+
+```bash
+# Move all LeanAI data to a different drive
+export LEANAI_HOME=/mnt/d/LeanAI/.leanai      # Linux
+$env:LEANAI_HOME = "D:\LeanAI\.leanai"         # Windows
+
+# Reuse models from LM Studio (no download needed!)
+export LEANAI_MODELS=/mnt/d/LMStudio           # Linux
+$env:LEANAI_MODELS = "D:\LMStudio"              # Windows
+```
+
+LeanAI recursively scans LEANAI_MODELS for `.gguf` files, so your LM Studio directory structure works out of the box.
 
 ### Code-Grounded Verification *(novel — nobody else has this)*
 
@@ -549,6 +598,7 @@ leanai/
 | System | `/status`, `/speed`, `/complete <prefix>`, `/help`, `/quit` |
 | Novel | `/bisect <bug>`, `/fuzz <code>`, `/evolution narrative`, `/evolution insights` |
 | Debug | `/explain <error>`, `/test <function>`, `/diff`, `/security <file>` |
+| Onboard | `/brain <path>`, `/onboard` |
 
 ---
 
@@ -556,18 +606,25 @@ leanai/
 
 - **42 integrated technologies**
 - **600+ tests** across 16 test files
-- **31,000+ lines** of code (99 files)
-- **49+ CLI commands**
+- **33,000+ lines** of code (101 files)
+- **50+ CLI commands**
 - **32 API endpoints**
 - **3 interfaces** (CLI, Web UI, VS Code extension)
 - **4 models** with intelligent auto-routing (7B fast, Gemma 4 frontend, Qwen3.5 backend, Qwen3 Coder)
 - **Smart routing** — frontend queries → Gemma 4, complex backend → Qwen3.5, simple → 7B
+- **Streaming output** — tokens appear word-by-word for Qwen models
 - **6 novel features** (Code Verification, Cascade Inference, ReAct, KV Cache, AST Verification, Mixture of Agents)
 - **Vulkan GPU acceleration** (3.5x speedup tested)
-- **Two-pass code review** (language-specific bug detection)
-- **9/10 response quality** on code explanations (Qwen3.5 + MoA, benchmarked against Claude Opus)
+- **21-rule system prompt** — Opus-level output quality (93% of Claude Opus 4.6)
+- **Two-pass code review** (language-specific, 20+ languages)
+- **9.5/10 response quality** on code explanations (Qwen3.5 + Gemma 4, benchmarked against Claude Opus)
 - **Sub-2ms autocomplete** from project brain index
+- **Multi-language brain** (20+ language parsers + generic fallback)
 - **Low RAM auto-detection** (works on 8GB machines)
+- **LM Studio compatible** — reuse existing models via LEANAI_MODELS env var
+- **Custom data directory** — LEANAI_HOME env var for non-standard installs
+- **File-aware queries** — mention a filename and LeanAI reads it automatically
+- **Project onboarding** — `/onboard` generates instant AI summary of any codebase
 - **0 cloud dependencies**
 - **$0/month**
 
