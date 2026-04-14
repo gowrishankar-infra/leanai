@@ -193,6 +193,50 @@ def main():
     # ── Predictive Pre-Generation ─────────────────────────────────
     predictor = PredictivePreGenerator(generate_fn=None)
 
+    # NOVEL: Anticipatory Generation — pre-generate predicted next answer in background
+    import threading
+    from core.predictor import predict_follow_ups
+    _anticipatory_thread = None
+    _anticipatory_cache = {}
+
+    def anticipatory_generate(predicted_query):
+        """Generate answer for predicted query in background thread."""
+        try:
+            if engine._model is None:
+                return
+            resp = engine.generate(predicted_query, project_context="")
+            result_text = getattr(resp, "text", str(resp))
+            if result_text and len(result_text.strip()) > 30:
+                _anticipatory_cache[predicted_query.lower().strip()] = (result_text, 0.7)
+        except Exception:
+            pass
+
+    def check_anticipatory(query):
+        """Check if we pre-generated this query's answer."""
+        key = query.lower().strip()
+        for cached_q, (resp, conf) in list(_anticipatory_cache.items()):
+            if key == cached_q or (len(key) > 10 and (key in cached_q or cached_q in key)):
+                return resp, conf
+        return None
+
+    def stop_anticipatory():
+        """Wait for background thread to finish before starting new generation."""
+        nonlocal _anticipatory_thread
+        if _anticipatory_thread and _anticipatory_thread.is_alive():
+            _anticipatory_thread.join(timeout=2)
+
+    def start_anticipatory(query, response):
+        """Predict next query and start generating in background."""
+        nonlocal _anticipatory_thread
+        if _anticipatory_thread and _anticipatory_thread.is_alive():
+            return
+        predictions = predict_follow_ups(query, response, max_predictions=1)
+        if predictions:
+            _anticipatory_thread = threading.Thread(
+                target=anticipatory_generate, args=(predictions[0],), daemon=True
+            )
+            _anticipatory_thread.start()
+
     # ── Semantic Git Bisect ───────────────────────────────────────
     semantic_bisect = SemanticGitBisect(repo_path=".", model_fn=model_fn)
 
@@ -1329,7 +1373,38 @@ def main():
                 evolution.track_query(user_input, session_id=str(current_session.id))
                 continue
 
+            # NOVEL: Semantic Speculative Caching — find similar cached response as draft
+            semantic_draft = None
+            semantic_draft_query = None
+            try:
+                embedder = getattr(engine, 'memory', None)
+                embed_model = getattr(embedder, 'embedder', None) if embedder else None
+                draft_result = speed.cache.get_semantic_draft(user_input, embedder=embed_model)
+                if draft_result:
+                    semantic_draft_query, semantic_draft, sim = draft_result
+                    print(f"  {C.DIM}🧠 Semantic draft found (similarity: {sim:.0%}) — adapting...{C.RESET}")
+            except Exception:
+                pass
+
+            # NOVEL: Anticipatory Generation — check if background thread pre-generated this
+            antic = check_anticipatory(user_input)
+            if antic:
+                text, confidence = antic
+                print_response_header()
+                print(f"  {C.DIM}⚡ Anticipatory — pre-generated in background{C.RESET}")
+                print(format_response(text))
+                separator()
+                print(format_confidence(confidence * 100, "Anticipated"))
+                print(f"  {C.fg(213)}⚡ ANTICIPATED — generated while you were reading{C.RESET}")
+                sessions.add_exchange(query=user_input, response=text, tier="anticipated", confidence=confidence*100)
+                evolution.track_query(user_input, session_id=str(current_session.id))
+                speed.cache_response(user_input, text, confidence * 100)
+                speed.cache._save()
+                continue
+
             # Phase 6b: Liquid router decides tier
+            # SAFETY: Stop any background anticipatory generation before using the model
+            stop_anticipatory()
             tier_suggestion = liquid_router.route(user_input)
 
             # Auto model selection: switch if needed
@@ -1494,6 +1569,14 @@ def main():
                 # Inject ReAct tool data into context
                 if react_data:
                     enriched_context = react_data + "\n\n" + enriched_context if enriched_context else react_data
+
+                # NOVEL: Inject semantic draft for adaptation (Speculative Caching)
+                if semantic_draft:
+                    enriched_context = (enriched_context or "") + (
+                        f"\n\n[DRAFT FROM SIMILAR QUERY: '{semantic_draft_query}']\n"
+                        f"Adapt this draft for the current query. Keep what's relevant, modify what's different.\n"
+                        f"{semantic_draft[:2000]}\n[END DRAFT]\n"
+                    )
 
                 # ── CASCADE INFERENCE ──────────────────────────────
                 # For complex queries: 7B drafts fast, 32B reviews and corrects
@@ -1740,6 +1823,12 @@ def main():
             # Predictor: predict follow-ups and start pre-generating
             if predictor.generate_fn:
                 predictor.on_query_complete(user_input, text)
+            # Anticipatory generation disabled — llama-cpp-python is not thread-safe
+            # Will be enabled when llama.cpp adds async/concurrent inference support
+            # try:
+            #     start_anticipatory(user_input, text)
+            # except Exception:
+            #     pass
 
 
 if __name__ == "__main__":

@@ -132,21 +132,46 @@ class ResponseCache:
 
     def get(self, query: str) -> Optional[Tuple[str, float]]:
         """Look up a cached response. Returns (response, confidence) or None."""
-        # Try exact match first
         exact_hash = self._hash(query)
         if exact_hash in self._memory_cache:
             response, confidence, _ = self._memory_cache[exact_hash]
             self._hits += 1
             return response, confidence
-
-        # Try keyword match
         kw_hash = self._keyword_hash(query)
         if kw_hash in self._memory_cache:
             response, confidence, _ = self._memory_cache[kw_hash]
             self._hits += 1
-            return response, confidence * 0.9  # slightly lower confidence for fuzzy match
-
+            return response, confidence * 0.9
         self._misses += 1
+        return None
+
+    def get_semantic_draft(self, query: str, embedder=None, threshold_low: float = 0.6, threshold_high: float = 0.85) -> Optional[Tuple[str, str, float]]:
+        """
+        NOVEL: Semantic Speculative Caching with Draft Adaptation.
+        Find a cached response for a SIMILAR (not identical) query.
+        Returns (cached_query, cached_response, similarity) or None.
+        The caller should ask the model to ADAPT the cached response instead of generating from scratch.
+        """
+        if not embedder or not self._query_texts:
+            return None
+        try:
+            query_emb = embedder.encode([query])[0]
+            best_sim = 0.0
+            best_key = None
+            for cached_query, cache_hash in self._query_texts.items():
+                cached_emb = embedder.encode([cached_query])[0]
+                # Cosine similarity
+                import numpy as np
+                sim = float(np.dot(query_emb, cached_emb) / (np.linalg.norm(query_emb) * np.linalg.norm(cached_emb) + 1e-8))
+                if sim > best_sim:
+                    best_sim = sim
+                    best_key = cached_query
+            if best_key and threshold_low <= best_sim < threshold_high:
+                if cache_hash in self._memory_cache:
+                    resp, conf, _ = self._memory_cache[self._hash(best_key)]
+                    return best_key, resp, best_sim
+        except Exception:
+            pass
         return None
 
     def put(self, query: str, response: str, confidence: float = 0.8):
@@ -154,15 +179,14 @@ class ResponseCache:
         exact_hash = self._hash(query)
         kw_hash = self._keyword_hash(query)
         timestamp = time.time()
-
         self._memory_cache[exact_hash] = (response, confidence, timestamp)
         self._memory_cache[kw_hash] = (response, confidence, timestamp)
-
-        # Evict old entries if over limit
+        # Track query texts for semantic draft matching
+        if not hasattr(self, '_query_texts'):
+            self._query_texts = {}
+        self._query_texts[query] = exact_hash
         if len(self._memory_cache) > self.max_entries * 2:
             self._evict()
-
-        # Periodic save
         if (self._hits + self._misses) % 20 == 0:
             self._save()
 
