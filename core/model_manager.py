@@ -22,6 +22,19 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Tuple
 
 
+def get_leanai_home():
+    """Get LeanAI home directory. Supports LEANAI_HOME env var."""
+    return Path(os.environ.get("LEANAI_HOME", str(Path.home() / ".leanai")))
+
+
+def get_models_dir():
+    """Get models directory. Supports LEANAI_MODELS env var for reusing LM Studio models."""
+    custom = os.environ.get("LEANAI_MODELS")
+    if custom:
+        return Path(custom)
+    return get_leanai_home() / "models"
+
+
 # ── Model Registry ────────────────────────────────────────────────
 
 @dataclass
@@ -39,35 +52,35 @@ class ModelInfo:
 
     @property
     def full_path(self) -> str:
-        return str(Path.home() / ".leanai" / "models" / self.filename)
+        return str(get_models_dir() / self.filename)
 
     @property
     def is_downloaded(self) -> bool:
         if os.path.exists(self.full_path):
             return True
         # Check for alternate filenames (user might have different quantization)
-        models_dir = Path.home() / ".leanai" / "models"
+        models_dir = get_models_dir()
         if not models_dir.exists():
             return False
         # Match by model family + size key
         fname_lower = self.filename.lower()
         # Gemma 4 26B detection
         if "gemma" in fname_lower and "26b" in fname_lower:
-            for f in models_dir.glob("*.gguf"):
+            for f in models_dir.rglob("*.gguf"):
                 fl = f.name.lower()
                 if "gemma" in fl and "26b" in fl:
                     return True
             return False
         # Qwen3.5-27B detection
         if "qwen3.5" in fname_lower and "27b" in fname_lower:
-            for f in models_dir.glob("*.gguf"):
+            for f in models_dir.rglob("*.gguf"):
                 fl = f.name.lower()
                 if "qwen3.5" in fl and "27b" in fl:
                     return True
             return False
         # Qwen3-Coder-Next detection
         if "qwen3" in fname_lower and "coder" in fname_lower:
-            for f in models_dir.glob("*.gguf"):
+            for f in models_dir.rglob("*.gguf"):
                 fl = f.name.lower()
                 if "qwen3" in fl and "coder" in fl:
                     return True
@@ -80,7 +93,7 @@ class ModelInfo:
                     size_key = s
                     break
         if size_key:
-            for f in models_dir.glob("*.gguf"):
+            for f in models_dir.rglob("*.gguf"):
                 fname = f.name.lower().replace("-", "").replace("_", "")
                 if size_key in fname and "qwen" in fname:
                     return True
@@ -91,27 +104,27 @@ class ModelInfo:
         """Find the actual file path, handling alternate filenames."""
         if os.path.exists(self.full_path):
             return self.full_path
-        models_dir = Path.home() / ".leanai" / "models"
+        models_dir = get_models_dir()
         if not models_dir.exists():
             return self.full_path
         # Gemma 4 26B detection
         fname_lower = self.filename.lower()
         if "gemma" in fname_lower and "26b" in fname_lower:
-            for f in models_dir.glob("*.gguf"):
+            for f in models_dir.rglob("*.gguf"):
                 fl = f.name.lower()
                 if "gemma" in fl and "26b" in fl:
                     return str(f)
             return self.full_path
         # Qwen3.5-27B detection
         if "qwen3.5" in fname_lower and "27b" in fname_lower:
-            for f in models_dir.glob("*.gguf"):
+            for f in models_dir.rglob("*.gguf"):
                 fl = f.name.lower()
                 if "qwen3.5" in fl and "27b" in fl:
                     return str(f)
             return self.full_path
         # Qwen3-Coder-Next detection
         if "qwen3" in fname_lower and "coder" in fname_lower:
-            for f in models_dir.glob("*.gguf"):
+            for f in models_dir.rglob("*.gguf"):
                 fl = f.name.lower()
                 if "qwen3" in fl and "coder" in fl:
                     return str(f)
@@ -124,7 +137,7 @@ class ModelInfo:
                     size_key = s
                     break
         if size_key:
-            for f in models_dir.glob("*.gguf"):
+            for f in models_dir.rglob("*.gguf"):
                 fname = f.name.lower().replace("-", "").replace("_", "")
                 if size_key in fname and "qwen" in fname:
                     return str(f)
@@ -329,7 +342,7 @@ class ModelManager:
     def __init__(self):
         self.models = dict(MODEL_REGISTRY)
         self._mode = "auto"  # "fast", "quality", "auto", or a specific model key
-        self._state_path = str(Path.home() / ".leanai" / "model_manager.json")
+        self._state_path = str(get_leanai_home() / "model_manager.json")
         self._stats = {
             "queries_routed": 0,
             "fast_count": 0,
@@ -375,7 +388,7 @@ class ModelManager:
         if model.is_downloaded:
             return True, f"{model.name} already downloaded at {model.full_path}"
 
-        models_dir = str(Path.home() / ".leanai" / "models")
+        models_dir = str(get_models_dir())
         os.makedirs(models_dir, exist_ok=True)
 
         print(f"Downloading {model.name} ({model.size_gb:.1f} GB)...")
@@ -426,7 +439,7 @@ class ModelManager:
     def _save_active(self, path):
         """Save active model path so it persists across restarts."""
         try:
-            config = Path.home() / ".leanai" / "active_model.txt"
+            config = get_leanai_home() / "active_model.txt"
             config.parent.mkdir(parents=True, exist_ok=True)
             config.write_text(str(path))
         except Exception:

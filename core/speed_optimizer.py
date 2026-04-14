@@ -105,7 +105,7 @@ class ResponseCache:
     """
 
     def __init__(self, cache_dir: Optional[str] = None, max_entries: int = 500):
-        self.cache_dir = cache_dir or str(Path.home() / ".leanai" / "response_cache")
+        self.cache_dir = cache_dir or str(Path(os.environ.get("LEANAI_HOME", str(Path.home() / ".leanai"))) / "response_cache")
         os.makedirs(self.cache_dir, exist_ok=True)
         self.max_entries = max_entries
         self._memory_cache: Dict[str, Tuple[str, float, float]] = {}  # hash -> (response, confidence, timestamp)

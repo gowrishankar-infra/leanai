@@ -79,12 +79,21 @@ def main():
         if not engine._model:
             engine._load_model()
         fmt = getattr(engine, "prompt_format", "chatml")
+        model_name = os.path.basename(engine.model_path or "").lower()
+        is_qwen35 = "qwen3.5" in model_name or "qwen35" in model_name
         if fmt == "chatml":
-            prompt = (
-                f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-                f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
-                f"<|im_start|>assistant\n"
-            )
+            if is_qwen35:
+                prompt = (
+                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                    f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+                    f"<|im_start|>assistant\n<think>\n</think>\n"
+                )
+            else:
+                prompt = (
+                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                    f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+                    f"<|im_start|>assistant\n"
+                )
             stop = ["<|im_end|>", "<|im_start|>"]
         else:
             prompt = (
@@ -94,7 +103,14 @@ def main():
             )
             stop = ["<|end|>", "<|user|>", "<|assistant|>"]
         result = engine._model(prompt, max_tokens=1024, temperature=0.1, stop=stop)
-        return result["choices"][0]["text"].strip()
+        text = result["choices"][0]["text"].strip()
+        # Strip think/channel blocks from ALL model_fn callers (MoA, code_quality, etc.)
+        import re
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        if "<think>" in text:
+            text = text.split("<think>")[0].strip()
+        text = re.sub(r"<\|channel>.*?<channel\|>", "", text, flags=re.DOTALL).strip()
+        return text
 
     def swarm_model_fn(prompt: str, temperature: float) -> str:
         if not engine._model:
@@ -298,6 +314,7 @@ def main():
 ║                                                        ║
 ║ PROJECT BRAIN                                          ║
 ║  /brain <path>     Scan & index a project              ║
+║  /onboard          AI summary of your project          ║
 ║  /describe <file>  Describe a file's contents          ║
 ║  /deps <file>      Show what depends on a file         ║
 ║  /impact <file>    Impact analysis of changing file     ║
@@ -408,6 +425,32 @@ def main():
                 react.register_tool("git", lambda q: git_intel.recent_activity(days=7), "Check git history")
             print(f"[Brain] Scanned {result['files_found']} files in {result['scan_time_ms']}ms")
             print(brain.project_summary())
+
+        elif cmd == "/onboard":
+            if not brain:
+                print("Run /brain <path> first to scan a project.")
+                continue
+            print("[Onboard] Generating project summary...", flush=True)
+            summary = brain.project_summary()
+            # Get REAL filenames to prevent hallucination
+            real_files = list(brain._file_analyses.keys())[:30]
+            file_list = ", ".join(real_files)
+            onboard_prompt = (
+                f"Generate a concise project onboarding summary for a new developer.\n\n"
+                f"Project data:\n{summary}\n"
+                f"ACTUAL files in the project (use ONLY these names, do NOT invent filenames):\n{file_list}\n\n"
+                f"Write 5-8 sentences covering: what this project does, main entry point, "
+                f"key technologies, architecture pattern, and where a new developer should start. "
+                f"ONLY reference files from the list above. Never invent file names."
+            )
+            onboard_resp = engine.generate(onboard_prompt, config=GenerationConfig(max_tokens=512),
+                                            project_context="")
+            onboard_text = getattr(onboard_resp, "text", str(onboard_resp))
+            print(f"\n  {'─' * 55}")
+            print(f"  📋 Project Onboarding Summary")
+            print(f"  {'─' * 55}")
+            print(format_response(onboard_text))
+            separator()
 
         elif cmd.startswith("/describe"):
             filepath = user_input[9:].strip()
@@ -1359,12 +1402,36 @@ def main():
                     react_data = "\n".join(react_parts)
                     print(f"  {C.DIM}ReAct: gathered data from {len(tool_results)} tool(s){C.RESET}")
 
+            # ── READ ACTUAL FILES (for MoA and standard paths) ──
+            import re as _re
+            file_patterns = _re.findall(r'[\w/\\]+\.(?:py|js|ts|jsx|tsx|go|rs|java|c|cpp|h|rb|php|sql|yaml|yml|json|toml|sh|css|html|svelte|vue|kt|swift|dart|ex|lua|zig|nim)\b', user_input)
+            file_content_block = ""
+            if file_patterns and brain and brain.config.project_path:
+                for fpath in file_patterns[:3]:
+                    fname = fpath.split('/')[-1].split('\\')[-1]
+                    full = os.path.join(brain.config.project_path, fpath)
+                    if not os.path.exists(full):
+                        for root, dirs, files in os.walk(brain.config.project_path):
+                            if fname in files:
+                                full = os.path.join(root, fname)
+                                break
+                    if os.path.exists(full):
+                        try:
+                            with open(full, 'r', encoding='utf-8', errors='ignore') as _f:
+                                content = _f.read()[:4000]
+                            file_content_block += f"\n\n[FILE CONTENT: {fpath}]\n{content}\n[END FILE]\n"
+                            print(f"  {C.DIM}📄 Reading {fpath} ({len(content)} chars){C.RESET}")
+                        except Exception:
+                            pass
+
             # ── Mixture of Agents: multi-perspective for reviews ──
             if moa.should_use_moa(user_input):
                 print(f"  {C.fg(222)}⚙ Multi-perspective analysis...{C.RESET}", flush=True)
                 moa_context = brain_ctx or ""
                 if react_data:
                     moa_context += "\n" + react_data
+                if file_content_block:
+                    moa_context += file_content_block
                 moa_result = moa.analyze(user_input, context=moa_context)
 
                 if moa_result.final_answer and len(moa_result.final_answer.strip()) > 30:
@@ -1419,6 +1486,10 @@ def main():
 
                 # Smart context: build enriched context
                 enriched_context = smart_ctx.build(user_input)
+
+                # Inject file content read earlier
+                if file_content_block:
+                    enriched_context = (enriched_context or "") + file_content_block
 
                 # Inject ReAct tool data into context
                 if react_data:

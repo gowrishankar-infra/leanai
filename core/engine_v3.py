@@ -59,14 +59,14 @@ class LeanAIResponse:
 
 def _get_active_model_path() -> str:
     """Find the active model. Checks config file first, then scans for any downloaded model."""
-    config_file = Path.home() / ".leanai" / "active_model.txt"
+    config_file = Path(os.environ.get("LEANAI_HOME", str(Path.home() / ".leanai"))) / "active_model.txt"
     if config_file.exists():
         path = config_file.read_text().strip()
         if Path(path).exists():
             return path
 
     # Auto-detect: scan models directory for any .gguf file
-    models_dir = Path.home() / ".leanai" / "models"
+    models_dir = Path(os.environ.get("LEANAI_HOME", str(Path.home() / ".leanai"))) / "models"
     if models_dir.exists():
         # Prefer qwen models, then any .gguf
         for pattern in ["qwen*7b*.gguf", "qwen*.gguf", "*.gguf"]:
@@ -83,7 +83,7 @@ def _get_active_model_path() -> str:
 def _save_active_model(model_path: str):
     """Save the active model path so it persists across restarts."""
     try:
-        config_file = Path.home() / ".leanai" / "active_model.txt"
+        config_file = Path(os.environ.get("LEANAI_HOME", str(Path.home() / ".leanai"))) / "active_model.txt"
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.write_text(model_path)
     except Exception:
@@ -656,30 +656,57 @@ class LeanAIEngineV3:
                        "\nYou:", "\nHuman:", "\nUser:"]
         full_text = ""
         in_thinking = False
+        buffer = ""  # Buffer to detect think/channel tags
         for chunk in self._model(prompt, max_tokens=config.max_tokens,
                 temperature=config.temperature, top_p=config.top_p,
                 top_k=config.top_k, repeat_penalty=config.repeat_penalty,
                 stop=stop_tokens, echo=False, stream=True):
             token = chunk["choices"][0]["text"]
             full_text += token
-            # Skip thinking/channel blocks
-            if "<think>" in full_text or "<|channel>" in full_text:
+            buffer += token
+
+            # Detect entering thinking mode
+            if "<think>" in buffer and not in_thinking:
                 in_thinking = True
-            if "</think>" in full_text or "<channel|>" in full_text:
-                in_thinking = False
+                buffer = ""
                 continue
+            # Detect exiting thinking mode
+            if "</think>" in buffer and in_thinking:
+                in_thinking = False
+                buffer = ""
+                continue
+            # Detect channel thinking
+            if "<|channel>" in buffer and not in_thinking:
+                in_thinking = True
+                buffer = ""
+                continue
+            if "<channel|>" in buffer and in_thinking:
+                in_thinking = False
+                buffer = ""
+                continue
+
+            # Only output when not thinking
             if not in_thinking and callback:
-                # Don't print special tokens
-                if not any(t in token for t in ["<think>", "</think>", "<|channel>", "<channel|>"]):
-                    callback(token)
+                # Flush buffer if it doesn't look like a partial tag
+                if len(buffer) > 15 or not any(p in buffer for p in ["<t", "</t", "<|c", "<c"]):
+                    # Don't print tag fragments
+                    clean = buffer
+                    for tag in ["<think>", "</think>", "<|channel>", "<channel|>"]:
+                        clean = clean.replace(tag, "")
+                    if clean:
+                        callback(clean)
+                    buffer = ""
+            elif in_thinking:
+                # Keep buffering but don't output
+                if len(buffer) > 200:
+                    buffer = buffer[-50:]  # prevent unbounded growth
+
         # Clean final text
         import re
         full_text = re.sub(r"<think>.*?</think>", "", full_text, flags=re.DOTALL).strip()
         full_text = re.sub(r"<\|channel>.*?<channel\|>", "", full_text, flags=re.DOTALL).strip()
-        if "<|channel>" in full_text:
-            lines = full_text.split("\n")
-            clean = [l for l in lines if l.strip().startswith(("###", "▸", "**", "1.", "2.", "-")) or ":" in l[:30]]
-            full_text = "\n".join(clean).strip() if clean else full_text
+        if "<think>" in full_text and "</think>" not in full_text:
+            full_text = full_text.split("<think>")[0].strip()
         for token in stop_tokens:
             full_text = full_text.split(token)[0].strip()
         return full_text
