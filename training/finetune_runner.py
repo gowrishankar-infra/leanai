@@ -89,7 +89,7 @@ class FineTuneRunner:
         adapter_mgr: Optional[AdapterManager] = None,
         data_dir: Optional[str] = None,
     ):
-        self.data_dir = data_dir or str(Path.home() / ".leanai" / "finetune")
+        self.data_dir = data_dir or str(Path(os.environ.get('LEANAI_HOME', str(Path.home() / '.leanai'))) / "finetune")
         os.makedirs(self.data_dir, exist_ok=True)
 
         self.pipeline = pipeline or TrainingDataPipeline(

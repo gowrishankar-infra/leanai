@@ -455,7 +455,7 @@ class ModelManager:
             f"pip install huggingface_hub\n"
             f'python -c "from huggingface_hub import hf_hub_download; '
             f"hf_hub_download('{model.repo_id}', '{model.filename}', "
-            f"local_dir='{Path.home() / '.leanai' / 'models'}')\""
+            f"local_dir='{get_models_dir()}')\""
         )
 
     # ── Mode & Selection ──────────────────────────────────────────

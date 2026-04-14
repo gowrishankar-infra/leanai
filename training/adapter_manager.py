@@ -86,7 +86,7 @@ class AdapterManager:
     """
 
     def __init__(self, data_dir: Optional[str] = None):
-        self.data_dir = data_dir or str(Path.home() / ".leanai" / "finetune" / "adapters")
+        self.data_dir = data_dir or str(Path(os.environ.get('LEANAI_HOME', str(Path.home() / '.leanai'))) / "finetune" / "adapters")
         os.makedirs(self.data_dir, exist_ok=True)
         self._adapters: Dict[str, AdapterInfo] = {}
         self._active_adapter: Optional[str] = None

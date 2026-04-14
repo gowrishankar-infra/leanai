@@ -85,7 +85,7 @@ class FederatedNode:
         # Setup data directory
         if not self.config.data_dir:
             self.config.data_dir = str(
-                Path.home() / ".leanai" / "federated" / self.config.node_id[:8]
+                Path(os.environ.get('LEANAI_HOME', str(Path.home() / '.leanai'))) / "federated" / self.config.node_id[:8]
             )
         os.makedirs(self.config.data_dir, exist_ok=True)
 

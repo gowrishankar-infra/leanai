@@ -84,7 +84,7 @@ class ProjectBrain:
 
         if not self.config.data_dir:
             self.config.data_dir = os.path.join(
-                str(Path.home()), ".leanai", "brains",
+                os.environ.get('LEANAI_HOME', os.path.join(str(Path.home()), '.leanai')), "brains",
                 hashlib.md5(self.config.project_path.encode()).hexdigest()[:12],
             )
         os.makedirs(self.config.data_dir, exist_ok=True)

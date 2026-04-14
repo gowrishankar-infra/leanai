@@ -85,7 +85,7 @@ def check_ram():
 def check_disk():
     """Check available disk space."""
     try:
-        models_dir = Path.home() / ".leanai" / "models"
+        models_dir = Path(os.environ.get('LEANAI_HOME', str(Path.home() / '.leanai'))) / "models"
         models_dir.mkdir(parents=True, exist_ok=True)
         import shutil
         free = shutil.disk_usage(str(models_dir)).free / (1024**3)
@@ -209,7 +209,7 @@ def _install_individual(pip_cmd):
 
 def download_model():
     """Download the 7B model."""
-    models_dir = Path.home() / ".leanai" / "models"
+    models_dir = Path(os.environ.get('LEANAI_HOME', str(Path.home() / '.leanai'))) / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
 
     # Check if any model already exists
@@ -228,7 +228,7 @@ def download_model():
             [sys.executable, "-c",
              "from huggingface_hub import hf_hub_download; "
              "import os; "
-             "dest = os.path.join(os.path.expanduser('~'), '.leanai', 'models'); "
+             "dest = os.path.join(os.environ.get('LEANAI_HOME', os.path.join(os.path.expanduser('~'), '.leanai')), 'models'); "
              "os.makedirs(dest, exist_ok=True); "
              "hf_hub_download('Qwen/Qwen2.5-Coder-7B-Instruct-GGUF', "
              "'qwen2.5-coder-7b-instruct-q4_k_m.gguf', local_dir=dest); "
@@ -262,7 +262,7 @@ def download_model():
 def _set_active_model(model_path: str):
     """Save the active model path so LeanAI knows which model to use."""
     try:
-        config_file = Path.home() / ".leanai" / "active_model.txt"
+        config_file = Path(os.environ.get('LEANAI_HOME', str(Path.home() / '.leanai'))) / "active_model.txt"
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.write_text(model_path)
         print(f"  Active model set: {Path(model_path).name} ✓")
@@ -327,8 +327,9 @@ def main():
     print("    /brain .          # scan your project")
     print("    /model auto       # auto-switch by complexity")
     print()
-    print("  Upgrade to Qwen3 (recommended, 18.6 GB, 6x faster than 32B):")
-    print("    python download_models.py qwen3-coder")
+    print("  Upgrade models (recommended, ~17 GB each):")
+    print("    python download_models.py gemma4-26b    # best for frontend/UI")
+    print("    python download_models.py qwen35-27b    # best for backend/reasoning")
     print()
     print("  Then just ask questions about your code!")
     print()

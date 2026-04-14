@@ -111,7 +111,7 @@ class TrainingDataPipeline:
     """
 
     def __init__(self, data_dir: Optional[str] = None):
-        self.data_dir = data_dir or str(Path.home() / ".leanai" / "finetune" / "data")
+        self.data_dir = data_dir or str(Path(os.environ.get('LEANAI_HOME', str(Path.home() / '.leanai'))) / "finetune" / "data")
         os.makedirs(self.data_dir, exist_ok=True)
         self._examples: List[TrainingExample] = []
         self._seen_hashes: set = set()
@@ -182,7 +182,7 @@ class TrainingDataPipeline:
 
     def add_from_training_exports(self, exports_dir: Optional[str] = None) -> int:
         """Import from existing training export JSONL files."""
-        exports_dir = exports_dir or str(Path.home() / ".leanai" / "training_exports")
+        exports_dir = exports_dir or str(Path(os.environ.get('LEANAI_HOME', str(Path.home() / '.leanai'))) / "training_exports")
         if not os.path.isdir(exports_dir):
             return 0
 

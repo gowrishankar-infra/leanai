@@ -177,7 +177,7 @@ class EvolutionTracker:
     """
 
     def __init__(self, data_dir: Optional[str] = None):
-        self.data_dir = data_dir or str(Path.home() / ".leanai" / "evolution")
+        self.data_dir = data_dir or str(Path(os.environ.get('LEANAI_HOME', str(Path.home() / '.leanai'))) / "evolution")
         os.makedirs(self.data_dir, exist_ok=True)
         self.themes: Dict[str, ProjectTheme] = {}
         self._load()

@@ -120,7 +120,7 @@ class SessionStore:
     """
 
     def __init__(self, data_dir: Optional[str] = None):
-        self.data_dir = data_dir or str(Path.home() / ".leanai" / "sessions")
+        self.data_dir = data_dir or str(Path(os.environ.get('LEANAI_HOME', str(Path.home() / '.leanai'))) / "sessions")
         os.makedirs(self.data_dir, exist_ok=True)
         self._sessions: Dict[str, Session] = {}
         self._current_session_id: Optional[str] = None
