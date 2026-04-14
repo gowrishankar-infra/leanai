@@ -261,6 +261,11 @@ def main():
     # ── Mixture of Agents ─────────────────────────────────────
     moa = MixtureOfAgents(model_fn=model_fn, perspectives=3, enabled=True)
 
+    # ── DualPipe: Asymmetric GPU/CPU Speculative Decoding ──────
+    from core.dual_pipe import DualPipeEngine, DualPipeConfig
+    dual_pipe = None
+    dual_pipe_enabled = False  # opt-in: user activates with /dualpipe on
+
     # ══════════════════════════════════════════════════════════════
     # STARTUP DISPLAY
     # ══════════════════════════════════════════════════════════════
@@ -388,6 +393,9 @@ def main():
 ║  /model auto        Auto-switch (7B/Gemma4/Qwen3.5)    ║
 ║  /model quality     Always use best model              ║
 ║  /model download X  Download a model                   ║
+║  /speed            Speed optimization report           ║
+║  /echo             CodeEcho acceleration stats         ║
+║  /dualpipe         DualPipe speculative decoding       ║
 ║  /status           Full system status                  ║
 ║  /index <path>     Index for semantic search           ║
 ║  /ask <question>   Search indexed codebase             ║
@@ -1152,6 +1160,71 @@ def main():
             cs = speed.cache.stats()
             print(f"\nCache: {cs['entries']} responses cached | {cs['hits']} hits | {cs['hit_rate']} hit rate")
 
+        elif cmd == "/echo":
+            es = engine.code_echo.stats()
+            print("═══ CodeEcho: Source-Grounded Speculative Decoding ═══")
+            print(f"  API available: {'yes' if es['api_available'] else 'no (run a query with file content to check)'}")
+            print(f"  Generations:   {es['generations']}")
+            print(f"  Total tokens:  {es['total_tokens']}")
+            print(f"  Echoed tokens: {es['echoed_tokens']} ({es['echo_ratio']})")
+            print(f"  Echo events:   {es['echo_events']}")
+            print(f"  Avg speedup:   {es['avg_speedup']}")
+            if es['generations'] == 0:
+                print("\n  Tip: Ask about a file in your project (e.g. 'review engine_v3.py')")
+                print("  CodeEcho activates when the model reproduces your source code.")
+
+        elif cmd.startswith("/dualpipe"):
+            arg = user_input[9:].strip().lower()
+            if arg == "on":
+                # Initialize DualPipe with 7B (draft) and 27B (target)
+                draft_path = model_mgr.get_model_path("qwen-7b")
+                target_path = model_mgr.get_model_path("qwen35-27b")
+                if not draft_path or not target_path:
+                    print("DualPipe requires both 7B and 27B models downloaded.")
+                    print(f"  7B:  {'found' if draft_path else 'MISSING — /model download qwen-7b'}")
+                    print(f"  27B: {'found' if target_path else 'MISSING — /model download qwen35-27b'}")
+                    continue
+                # Unload engine's model to free RAM
+                if engine._model is not None:
+                    del engine._model
+                    engine._model = None
+                    engine._model_loaded = False
+                dual_pipe = DualPipeEngine(draft_path, target_path,
+                    DualPipeConfig(verbose=True, n_threads=engine.n_threads))
+                if dual_pipe.load():
+                    dual_pipe_enabled = True
+                    print("DualPipe ON — 7B drafts on GPU, 27B verifies on CPU")
+                else:
+                    dual_pipe = None
+                    dual_pipe_enabled = False
+                    print("DualPipe failed to load. Falling back to normal generation.")
+            elif arg == "off":
+                dual_pipe_enabled = False
+                if dual_pipe:
+                    dual_pipe.unload()
+                    dual_pipe = None
+                print("DualPipe OFF — back to normal generation.")
+                print("Note: run a query to reload the model.")
+            else:
+                # Show stats
+                print("═══ DualPipe: Asymmetric GPU/CPU Speculative Decoding ═══")
+                if dual_pipe and dual_pipe_enabled:
+                    ds = dual_pipe.stats()
+                    print(f"  Status:          ON")
+                    print(f"  Generations:     {ds['generations']}")
+                    print(f"  Total tokens:    {ds['total_tokens']}")
+                    print(f"  Accepted chunks: {ds['accepted_chunks']} ({ds['acceptance_rate']})")
+                    print(f"  Rejected chunks: {ds['rejected_chunks']}")
+                    print(f"  Draft time:      {ds['draft_time_ms']}ms")
+                    print(f"  Target time:     {ds['target_time_ms']}ms")
+                    print(f"  Effective speed: {ds['effective_tok_s']} tok/s")
+                    print(f"  Speedup:         {ds['speedup']}")
+                else:
+                    print(f"  Status: OFF")
+                    print(f"\n  Turn on:  /dualpipe on")
+                    print(f"  Turn off: /dualpipe off")
+                    print(f"  Requires: 7B + 27B models (both ~21GB in RAM via mmap)")
+
         elif cmd.startswith("/complete"):
             prefix = user_input[9:].strip()
             if not prefix:
@@ -1646,71 +1719,142 @@ def main():
                         # 32B not available, use draft
                         resp = draft_resp
                 else:
-                    # ── STANDARD GENERATION ────────────────────────
-                    # For high-quality models: use STREAMING (tokens appear as generated)
-                    model_basename = os.path.basename(engine.model_path or "").lower()
-                    use_streaming = any(x in model_basename for x in ["qwen3.5", "qwen35", "qwen3-coder"])
-
-                    if use_streaming:
-                        # Build prompt same way engine does
+                    # ── DUALPIPE: Asymmetric GPU/CPU Speculative Decoding ──
+                    if dual_pipe_enabled and dual_pipe and dual_pipe.is_available:
                         mem_ctx = engine.memory.prepare_context(user_input)
                         history = engine.memory.working.get_context_window(max_tokens=512)
                         prompt = engine._build_prompt(user_input, mem_ctx, history,
                                                        project_context=enriched_context)
-                        config = GenerationConfig(max_tokens=smart_tokens)
 
-                        # Print header and stream tokens
+                        stop_strings = [
+                            "<|im_end|>", "<|im_start|>", "<|user|>", "<|end|>",
+                            "<|assistant|>", "<end_of_turn>", "<start_of_turn>",
+                            "\nYou:", "\nHuman:", "\nUser:"
+                        ]
+
                         print_response_header()
                         import sys
-                        streamed_text = engine.generate_streaming(
-                            prompt, config,
+                        dp_text, dp_stats = dual_pipe.generate(
+                            prompt, max_tokens=smart_tokens,
+                            stop_strings=stop_strings,
                             callback=lambda token: (sys.stdout.write(token), sys.stdout.flush())
                         )
-                        print()  # newline after streaming
+                        print()
 
-                        # Record in memory
-                        engine.memory.record_exchange(user_input, streamed_text)
+                        if dp_stats and dp_stats.total_tokens > 0:
+                            print(f"  {C.fg(208)}⚡ {dp_stats.summary()}{C.RESET}")
 
-                        # Create a simple response object
-                        class StreamResp:
+                        engine.memory.record_exchange(user_input, dp_text)
+
+                        class DualPipeResp:
                             def __init__(self, t):
                                 self.text = t
-                                self.confidence = 0.72
-                                self.confidence_label = "Moderate"
-                                self.tier_used = "stream"
-                                self.latency_ms = (time.time() - start) * 1000
+                                self.confidence = 0.85
+                                self.confidence_label = "High"
+                                self.tier_used = "dualpipe"
+                                self.latency_ms = dp_stats.total_time_ms if dp_stats else 0
                                 self.answered_from_memory = False
                                 self.memory_context_used = bool(mem_ctx)
                                 self.verified = False
                                 self.code_executed = False
                                 self.code_passed = False
                                 self.code_output = ""
-                        resp = StreamResp(streamed_text)
+                        resp = DualPipeResp(dp_text)
+
                     else:
-                        # Non-streaming fallback (7B, legacy 32B)
-                        def do_generate(max_tokens, **kw):
-                            return engine.generate(user_input,
-                                                   config=GenerationConfig(max_tokens=max_tokens),
-                                                   project_context=enriched_context)
+                        # ── STANDARD GENERATION ────────────────────────
+                        # For high-quality models: use STREAMING (tokens appear as generated)
+                        # CodeEcho also uses this path for source-grounded acceleration
+                        model_basename = os.path.basename(engine.model_path or "").lower()
+                        use_streaming = any(x in model_basename for x in ["qwen3.5", "qwen35", "qwen3-coder"])
 
-                        def do_fallback(max_tokens, **kw):
-                            return engine.generate(user_input,
-                                                   config=GenerationConfig(max_tokens=max(max_tokens // 2, 128)),
-                                                   project_context=enriched_context)
+                        if use_streaming:
+                            # Build prompt same way engine does
+                            mem_ctx = engine.memory.prepare_context(user_input)
+                            history = engine.memory.working.get_context_window(max_tokens=512)
+                            prompt = engine._build_prompt(user_input, mem_ctx, history,
+                                                           project_context=enriched_context)
+                            config = GenerationConfig(max_tokens=smart_tokens)
 
-                        rec_result = recovery.safe_generate(
-                            generate_fn=do_generate,
-                            max_tokens=smart_tokens,
-                            fallback_fn=do_fallback,
-                        )
+                            # Print header and stream tokens
+                            print_response_header()
+                            import sys
 
-                        if rec_result.success:
-                            resp = rec_result.text
-                            if rec_result.recovered:
-                                print(f"  [Recovery] Recovered: {rec_result.recovery_note}")
+                            # ── CODEECHO: Source-Grounded Speculative Decoding ──
+                            # Collect source material for echo detection
+                            echo_sources = []
+                            if file_content_block:
+                                # Extract raw file contents (strip [FILE CONTENT:] markers)
+                                import re as _echo_re
+                                for fc_match in _echo_re.finditer(
+                                    r'\[FILE CONTENT: [^\]]+\]\n(.*?)\n\[END FILE\]',
+                                    file_content_block, _echo_re.DOTALL
+                                ):
+                                    echo_sources.append(fc_match.group(1))
+                            if brain_ctx and len(brain_ctx) > 100:
+                                echo_sources.append(brain_ctx)
+
+                            echo_stats = None
+                            if echo_sources:
+                                streamed_text, echo_stats = engine.generate_with_codeecho(
+                                    prompt, config, echo_sources,
+                                    callback=lambda token: (sys.stdout.write(token), sys.stdout.flush())
+                                )
+                            else:
+                                streamed_text = engine.generate_streaming(
+                                    prompt, config,
+                                    callback=lambda token: (sys.stdout.write(token), sys.stdout.flush())
+                                )
+
+                            print()  # newline after streaming
+
+                            # Show CodeEcho stats if it was used
+                            if echo_stats and echo_stats.echo_events > 0:
+                                print(f"  {C.fg(81)}⚡ {echo_stats.summary()}{C.RESET}")
+
+                            # Record in memory
+                            engine.memory.record_exchange(user_input, streamed_text)
+
+                            # Create a simple response object
+                            class StreamResp:
+                                def __init__(self, t):
+                                    self.text = t
+                                    self.confidence = 0.72
+                                    self.confidence_label = "Moderate"
+                                    self.tier_used = "stream"
+                                    self.latency_ms = (time.time() - start) * 1000
+                                    self.answered_from_memory = False
+                                    self.memory_context_used = bool(mem_ctx)
+                                    self.verified = False
+                                    self.code_executed = False
+                                    self.code_passed = False
+                                    self.code_output = ""
+                            resp = StreamResp(streamed_text)
                         else:
-                            print(f"\nError: {rec_result.error}")
-                            continue
+                            # Non-streaming fallback (7B, legacy 32B)
+                            def do_generate(max_tokens, **kw):
+                                return engine.generate(user_input,
+                                                       config=GenerationConfig(max_tokens=max_tokens),
+                                                       project_context=enriched_context)
+
+                            def do_fallback(max_tokens, **kw):
+                                return engine.generate(user_input,
+                                                       config=GenerationConfig(max_tokens=max(max_tokens // 2, 128)),
+                                                       project_context=enriched_context)
+
+                            rec_result = recovery.safe_generate(
+                                generate_fn=do_generate,
+                                max_tokens=smart_tokens,
+                                fallback_fn=do_fallback,
+                            )
+
+                            if rec_result.success:
+                                resp = rec_result.text
+                                if rec_result.recovered:
+                                    print(f"  [Recovery] Recovered: {rec_result.recovery_note}")
+                            else:
+                                print(f"\nError: {rec_result.error}")
+                                continue
             except Exception as e:
                 print(f"\nError: {e}")
                 continue

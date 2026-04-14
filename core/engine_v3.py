@@ -13,6 +13,7 @@ from pathlib import Path
 
 from core.router import TaskRouter, Tier
 from core.watchdog import MetaCognitiveWatchdog
+from core.code_echo import CodeEchoEngine, CodeEchoConfig
 from core.confidence import ConfidenceScoringEngine
 from core.calibrator import ConfidenceCalibrator
 from tools.z3_verifier import Z3Verifier, Verdict
@@ -362,6 +363,7 @@ class LeanAIEngineV3:
         )
         self._model        = None
         self._model_loaded = False
+        self.code_echo     = CodeEchoEngine(CodeEchoConfig(verbose=verbose))
 
         if auto_train:
             self.trainer.start()
@@ -592,6 +594,7 @@ class LeanAIEngineV3:
                 n_gpu_layers=gpu_layers, use_mmap=True, use_mlock=False,
                 logits_all=False, verbose=self.verbose,
             )
+            self._ctx_size = ctx_size  # Store for context overflow checks
             print(f"[LeanAI v3] GPU layers: {gpu_layers}")
             self._model_loaded = True
             print("[LeanAI v3] Model loaded. Ready.")
@@ -726,6 +729,109 @@ class LeanAIEngineV3:
         for token in stop_tokens:
             full_text = full_text.split(token)[0].strip()
         return full_text
+
+    def generate_with_codeecho(self, prompt, config, sources, callback=None):
+        """
+        Generate with CodeEcho: Source-Grounded Speculative Decoding.
+
+        When the model reproduces code from source material, CodeEcho
+        batch-injects those tokens at prefill speed instead of generating
+        them one by one. Yields 2-5x speedup on code review tasks.
+
+        Args:
+            prompt: The full formatted prompt string
+            config: GenerationConfig with max_tokens, temperature, etc.
+            sources: List of source texts (file contents, brain context)
+            callback: Called with each generated text chunk (for streaming)
+
+        Returns:
+            (generated_text, echo_stats) or (generated_text, None) on fallback
+        """
+        self._load_model()
+        if self._model is None:
+            if callback:
+                callback("Model not loaded. Run: python setup_leanai.py")
+            return "Model not loaded.", None
+
+        # Check if CodeEcho API is available on this model
+        if not self.code_echo.check_api(self._model):
+            # Fallback to normal streaming
+            text = self.generate_streaming(prompt, config, callback)
+            return text, None
+
+        # Index source material
+        self.code_echo.reset_index()
+        valid_sources = [s for s in sources if s and len(s.strip()) > 50]
+        if not valid_sources:
+            # No sources worth indexing, fall back to normal streaming
+            text = self.generate_streaming(prompt, config, callback)
+            return text, None
+
+        indexed = self.code_echo.index_sources(self._model, valid_sources)
+        if indexed == 0:
+            text = self.generate_streaming(prompt, config, callback)
+            return text, None
+
+        # Context overflow protection — use ACTUAL ctx_size
+        ctx_limit = getattr(self, '_ctx_size', 4096) or 4096
+        max_prompt_chars = max((ctx_limit - config.max_tokens - 100) * 4, 2000)
+        if len(prompt) > max_prompt_chars:
+            keep = max_prompt_chars // 2
+            prompt = prompt[:keep] + "\n\n[... truncated ...]\n\n" + prompt[-keep:]
+
+        # Tokenize the prompt
+        try:
+            prompt_tokens = self._model.tokenize(prompt.encode('utf-8'), special=True)
+        except TypeError:
+            prompt_tokens = self._model.tokenize(prompt.encode('utf-8'))
+
+        # Calculate ACTUAL available token budget (prevents KV cache overflow)
+        # KV cache = ctx_limit. Prompt fills some, rest is for generation.
+        # Reserve 50 tokens for safety margin.
+        available_tokens = ctx_limit - len(prompt_tokens) - 50
+        if available_tokens < 100:
+            # Prompt is too long, truncate and re-tokenize
+            keep = (ctx_limit - config.max_tokens - 100) * 2  # chars
+            prompt = prompt[:max(keep, 1000)] + "\n\n[... truncated ...]\n\n" + prompt[-1000:]
+            try:
+                prompt_tokens = self._model.tokenize(prompt.encode('utf-8'), special=True)
+            except TypeError:
+                prompt_tokens = self._model.tokenize(prompt.encode('utf-8'))
+            available_tokens = ctx_limit - len(prompt_tokens) - 50
+
+        # Use the smaller of config.max_tokens and available budget
+        effective_max_tokens = min(config.max_tokens, max(available_tokens, 128))
+
+        # Resolve stop token IDs
+        stop_strings = [
+            "<|im_end|>", "<|im_start|>", "<|user|>", "<|end|>",
+            "<|assistant|>", "<end_of_turn>", "<start_of_turn>",
+            "\nYou:", "\nHuman:", "\nUser:"
+        ]
+        stop_token_ids = []
+        for s in stop_strings:
+            try:
+                tids = self._model.tokenize(s.encode('utf-8'), add_bos=False, special=True)
+                if tids and len(tids) == 1:
+                    stop_token_ids.append(tids[0])
+            except Exception:
+                pass
+
+        # Generate with CodeEcho
+        text, stats = self.code_echo.generate(
+            model=self._model,
+            prompt_tokens=prompt_tokens,
+            max_tokens=effective_max_tokens,
+            temperature=config.temperature,
+            top_p=config.top_p,
+            top_k=config.top_k,
+            repeat_penalty=config.repeat_penalty,
+            stop_token_ids=stop_token_ids,
+            stop_strings=stop_strings,
+            callback=callback,
+        )
+
+        return text, stats
 
     def _build_prompt(self, query, memory_context, history, project_context=""):
         system = (

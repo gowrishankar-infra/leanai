@@ -712,6 +712,7 @@ System status, speed optimization, and help.
 |---------|-------------|
 | `/status` | Full system status (model, memory, sessions, git) |
 | `/speed` | Speed optimization report + cache stats |
+| `/echo` | CodeEcho acceleration stats (source-grounded speculative decoding) |
 | `/help` | Show available commands |
 | `/quit` | Exit LeanAI |
 
@@ -726,6 +727,11 @@ Shows: model loaded, memory count, session count, git branch, training pairs, ad
 /speed
 ```
 Shows: cache hit rate, GPU detection, recommended optimizations.
+
+```
+/echo
+```
+Shows: CodeEcho acceleration stats — total tokens echoed, echo events, echo ratio, estimated speedup. CodeEcho detects when the model reproduces source code and batch-injects those tokens at prefill speed instead of generating them one by one.
 
 ---
 
