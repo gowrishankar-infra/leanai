@@ -109,6 +109,41 @@ def _optimal_threads(model_path: str) -> int:
     return min(cpu, 16)
 
 
+def _truncate_repetition(text: str, max_word_repeats: int = 4) -> str:
+    """Detect and truncate repetitive model output. Runs on all models."""
+    if not text or len(text) < 100:
+        return text
+    words = text.split()
+    if len(words) < 20:
+        return text
+    # Same word repeated N+ times consecutively
+    repeat_count = 1
+    for i in range(1, len(words)):
+        if words[i] == words[i - 1]:
+            repeat_count += 1
+            if repeat_count >= max_word_repeats:
+                cut = i - max_word_repeats + 1
+                truncated = " ".join(words[:cut]).rstrip()
+                if len(truncated) > 50:
+                    return truncated + "\n\n*[Response truncated — repetition detected]*"
+                return text
+        else:
+            repeat_count = 1
+    # Character-level pattern repetition
+    for plen in range(5, 30):
+        if len(text) < plen * 5:
+            continue
+        tail = text[-500:] if len(text) > 500 else text
+        for i in range(len(tail) - plen * 4):
+            pat = tail[i:i + plen]
+            if pat.strip() and tail.count(pat) >= 8:
+                pos = text.find(pat)
+                if pos > 50:
+                    return text[:pos].rstrip() + "\n\n*[Response truncated — repetition detected]*"
+                break
+    return text
+
+
 def _looks_like_python(code: str) -> bool:
     """Check if code looks like Python (not YAML, JSON, bash, SQL, markdown, Go, etc)."""
     # Skip very short content (just a language tag like "go", "rust", etc)
@@ -655,6 +690,8 @@ class LeanAIEngineV3:
                     found_content = True
                     clean_lines.append(line)
             text = "\n".join(clean_lines).strip() if clean_lines else text
+        # Truncate repetitive output (catches all models at source)
+        text = _truncate_repetition(text)
         return text
 
     def generate_streaming(self, prompt, config, callback=None):

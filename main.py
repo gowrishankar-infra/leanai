@@ -23,6 +23,7 @@ from brain.evolution_tracker import EvolutionTracker
 from tools.adversarial import AdversarialVerifier
 from core.code_quality import CodeQualityEnhancer
 from core.code_verifier import CodeGroundedVerifier
+from core.agac import AGACEngine
 from core.cascade import CascadeInference
 from core.react import ReActReasoner
 from core.mixture_of_agents import MixtureOfAgents
@@ -56,6 +57,73 @@ from core.terminal_ui import (
 
 
 BANNER = ""  # handled by terminal_ui
+
+
+def _truncate_repetition(text: str, max_word_repeats: int = 4, max_phrase_repeats: int = 3) -> str:
+    """
+    Detect and truncate repetitive model output.
+    Catches cases like 'step-step-step-step...' or 'produce produce produce...'.
+    Runs on ALL responses from ALL models as a safety net.
+    """
+    if not text or len(text) < 100:
+        return text
+
+    words = text.split()
+    if len(words) < 20:
+        return text
+
+    # ── Check 1: Same word repeated N+ times consecutively ────────
+    repeat_count = 1
+    for i in range(1, len(words)):
+        if words[i] == words[i - 1]:
+            repeat_count += 1
+            if repeat_count >= max_word_repeats:
+                # Truncate at the start of the repetition
+                cut_point = i - max_word_repeats + 1
+                truncated = " ".join(words[:cut_point]).rstrip()
+                if len(truncated) > 50:
+                    return truncated + "\n\n*[Response truncated — repetition detected]*"
+                return text  # too short after truncation, return original
+        else:
+            repeat_count = 1
+
+    # ── Check 2: Same phrase (3-5 words) repeated N+ times ────────
+    for phrase_len in [3, 4, 5]:
+        if len(words) < phrase_len * max_phrase_repeats:
+            continue
+        for start in range(len(words) - phrase_len * max_phrase_repeats):
+            phrase = " ".join(words[start:start + phrase_len])
+            repeats = 1
+            pos = start + phrase_len
+            while pos + phrase_len <= len(words):
+                next_phrase = " ".join(words[pos:pos + phrase_len])
+                if next_phrase == phrase:
+                    repeats += 1
+                    pos += phrase_len
+                else:
+                    break
+            if repeats >= max_phrase_repeats:
+                truncated = " ".join(words[:start + phrase_len]).rstrip()
+                if len(truncated) > 50:
+                    return truncated + "\n\n*[Response truncated — repetition detected]*"
+
+    # ── Check 3: Character-level repetition (e.g. "step-step-step-") ──
+    # Look for a short pattern repeated many times
+    for pattern_len in range(5, 30):
+        if len(text) < pattern_len * 5:
+            continue
+        # Check last chunk of text for repetition
+        tail = text[-500:] if len(text) > 500 else text
+        for i in range(len(tail) - pattern_len * 4):
+            pattern = tail[i:i + pattern_len]
+            if pattern.strip() and tail.count(pattern) >= 8:
+                # Find first occurrence in full text and truncate there
+                first_pos = text.find(pattern)
+                if first_pos > 50:
+                    return text[:first_pos].rstrip() + "\n\n*[Response truncated — repetition detected]*"
+                break
+
+    return text
 
 
 def main():
@@ -251,6 +319,7 @@ def main():
 
     # ── Code-Grounded Verification (fact-checks against AST) ──
     code_verifier = CodeGroundedVerifier(brain=None)
+    agac = AGACEngine(brain=None)
 
     # ── Cascade Inference (7B draft → 32B review) ─────────────
     cascade = CascadeInference(draft_fn=model_fn, review_fn=model_fn, enabled=True)
@@ -470,6 +539,7 @@ def main():
             smart_ctx = SmartContext(brain=brain, git_intel=git_intel, session_store=sessions, hdc=hdc)
             completer.update_brain(brain)  # update autocomplete index
             code_verifier.update_brain(brain)  # update fact-checker
+            agac.update_brain(brain)  # update auto-corrector
 
             # Register ReAct tools with brain data
             react.register_tool("brain", brain.find_function, "Look up function/file in project")
@@ -1583,6 +1653,8 @@ def main():
                 moa_result = moa.analyze(user_input, context=moa_context)
 
                 if moa_result.final_answer and len(moa_result.final_answer.strip()) > 30:
+                    # Truncate repetitive MoA output
+                    moa_text = _truncate_repetition(moa_result.final_answer)
                     print(f"  {C.DIM}  {moa_result.summary()}{C.RESET}")
 
                     # Create a response-like object
@@ -1600,7 +1672,7 @@ def main():
                             self.code_passed = False
                             self.code_output = ""
 
-                    resp = _MoAResp(moa_result.final_answer)
+                    resp = _MoAResp(moa_text)
                     elapsed = time.time() - start
                     text = resp.text
                     confidence = 90
@@ -1617,6 +1689,10 @@ def main():
                     # Code verification
                     if code_verifier.should_verify(user_input, text):
                         text = code_verifier.verify(text, query=user_input)
+
+                    # AGAC: Auto-correct + enrich
+                    if agac.brain:
+                        text, _agac_s = agac.process(text, query=user_input)
 
                     print_response_header()
                     print(format_response(text))
@@ -1740,6 +1816,7 @@ def main():
                             callback=lambda token: (sys.stdout.write(token), sys.stdout.flush())
                         )
                         print()
+                        dp_text = _truncate_repetition(dp_text)
 
                         if dp_stats and dp_stats.total_tokens > 0:
                             print(f"  {C.fg(208)}⚡ {dp_stats.summary()}{C.RESET}")
@@ -1813,6 +1890,9 @@ def main():
                                 print(f"  {C.fg(81)}⚡ {echo_stats.summary()}{C.RESET}")
 
                             # Record in memory
+                            # Truncate repetitive streamed output
+                            streamed_text = _truncate_repetition(streamed_text)
+
                             engine.memory.record_exchange(user_input, streamed_text)
 
                             # Create a simple response object
@@ -1876,6 +1956,9 @@ def main():
             code_passed = getattr(resp, "code_passed", False)
             code_output = getattr(resp, "code_output", "")
 
+            # ── Repetition detector (catches ALL models) ──────────────
+            text = _truncate_repetition(text)
+
             # Print response with formatting
             # Two-pass quality: if response contains code, run a review pass
             # Skip for high-quality models (Gemma 4, Qwen3.5) — they're good enough without it
@@ -1889,6 +1972,13 @@ def main():
             # Code-Grounded Verification: check claims against actual AST
             if code_verifier.should_verify(user_input, text):
                 text = code_verifier.verify(text, query=user_input)
+
+            # AGAC: Auto-correct hallucinated identifiers + enrich with project references
+            if agac.brain:
+                text, agac_stats = agac.process(text, query=user_input)
+                agac_summary = agac_stats.summary()
+                if agac_summary:
+                    print(f"  {C.fg(114)}✓ {agac_summary}{C.RESET}")
 
             # Print response (skip if already streamed)
             was_streamed = getattr(resp, "tier_used", "") == "stream"
