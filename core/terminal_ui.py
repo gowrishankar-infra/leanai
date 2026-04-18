@@ -150,7 +150,18 @@ def print_commands():
 # ── Input prompt ──────────────────────────────────────────────
 
 def get_prompt():
-    """Return a styled input prompt with gradient arrow."""
+    """
+    Return a styled input prompt with gradient arrow.
+
+    On Windows PowerShell with legacy console host, the Unicode ❯ char (U+276F)
+    plus 24-bit ANSI color codes can desync the terminal echo, leaving the
+    cursor blinking but typing invisible. To work around this without
+    losing the look on cmd.exe / Windows Terminal, set the env var
+    LEANAI_SIMPLE_PROMPT=1 to fall back to a plain ASCII prompt.
+    """
+    import os as _os
+    if _os.environ.get('LEANAI_SIMPLE_PROMPT') == '1':
+        return "\n  > "
     return f"\n  {C.fg(141)}❯{C.fg(135)}❯{C.fg(99)}❯{C.RESET} "
 
 

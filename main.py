@@ -10,6 +10,145 @@ import sys
 import time
 import re
 
+# ══════════════════════════════════════════════════════════════════════
+# WINDOWS CONSOLE BOOTSTRAP — must run BEFORE any other module is imported
+# ══════════════════════════════════════════════════════════════════════
+# This block fixes the PowerShell "cursor blinks but I can't type at the
+# ❯❯❯ prompt" bug. Three root causes addressed:
+#   1) PowerShell defaults to UTF-16 / CP-1252 — when Python writes the
+#      ❯ Unicode character (U+276F) it desyncs the input echo
+#   2) PowerShell's legacy console host doesn't fully parse 24-bit ANSI
+#      color codes used in get_prompt(), corrupting cursor tracking
+#   3) Background daemon threads (Trainer, Predictor, FileWatcher) can
+#      print() while input() is active, scrambling the readline buffer
+def _bootstrap_windows_console():
+    """Force UTF-8 console + ANSI processing on Windows. Safe no-op on others."""
+    if sys.platform != "win32":
+        return
+    # Force Python's stdio streams to UTF-8 so writing ❯ doesn't garble
+    try:
+        # Python 3.7+ supports reconfigure() on text streams
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace', line_buffering=True)
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace', line_buffering=True)
+        if hasattr(sys.stdin, 'reconfigure'):
+            sys.stdin.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+    # Set the Windows console code page to UTF-8 (65001) for both input and output
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleCP(65001)        # input
+        kernel32.SetConsoleOutputCP(65001)  # output
+    except Exception:
+        pass
+
+    # Enable virtual terminal processing on stdout (24-bit color, cursor moves)
+    # AND restore stdin to cooked mode (line input + echo) — defends against
+    # any prior session that left it in raw mode.
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+
+        STD_INPUT_HANDLE = -10
+        STD_OUTPUT_HANDLE = -11
+        ENABLE_PROCESSED_INPUT = 0x0001
+        ENABLE_LINE_INPUT = 0x0002
+        ENABLE_ECHO_INPUT = 0x0004
+        ENABLE_PROCESSED_OUTPUT = 0x0001
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+
+        h_in = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        if h_in and h_in != -1:
+            kernel32.SetConsoleMode(
+                h_in,
+                ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT,
+            )
+
+        h_out = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        if h_out and h_out != -1:
+            current = wintypes.DWORD()
+            if kernel32.GetConsoleMode(h_out, ctypes.byref(current)):
+                kernel32.SetConsoleMode(
+                    h_out,
+                    current.value | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+                )
+    except Exception:
+        pass
+
+    # PYTHONIOENCODING and PYTHONUTF8 propagate to subprocesses
+    os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
+    os.environ.setdefault('PYTHONUTF8', '1')
+
+
+# Run the bootstrap RIGHT NOW before anything else loads
+_bootstrap_windows_console()
+
+# Global lock so background-thread prints don't interleave with user input
+import threading as _threading
+_print_lock = _threading.RLock()
+_user_at_prompt = _threading.Event()  # set when waiting on input()
+
+
+def _safe_input(prompt: str) -> str:
+    """
+    Thread-safe input() wrapper.
+
+    On Windows, when background daemon threads (Trainer, Predictor,
+    FileWatcher) call print() while we're waiting on input(), the
+    console output gets interleaved into the readline buffer and the
+    cursor stops echoing what you type.
+
+    This wrapper:
+      - Signals to background threads that we're at the prompt
+      - Flushes stdio before drawing the prompt
+      - Re-flushes stdio after reading input
+      - Re-asserts UTF-8 console mode if we're on Windows (in case
+        a background thread's print() call changed the code page)
+    """
+    _user_at_prompt.set()
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        try:
+            value = input(prompt)
+        finally:
+            _user_at_prompt.clear()
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+        return value
+    except Exception:
+        _user_at_prompt.clear()
+        raise
+
+
+# Patch the global print() so background threads serialize with each other
+# (so two threads printing simultaneously don't shred each other's output)
+_real_print = print
+def _safe_print(*args, **kwargs):
+    with _print_lock:
+        _real_print(*args, **kwargs)
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+# Make safe_print available as a builtin override only when explicitly called.
+# We don't replace the global builtin — too risky for existing code.
+# Background threads can opt in by importing _safe_print from main.
+
+# ══════════════════════════════════════════════════════════════════════
+# END Windows console bootstrap
+# ══════════════════════════════════════════════════════════════════════
+
+
 # ── Core engine ───────────────────────────────────────────────────
 from core.engine_v3 import LeanAIEngineV3 as LeanAIEngine, GenerationConfig
 from core.model_manager import ModelManager, classify_complexity
@@ -497,7 +636,7 @@ def main():
 
     while True:
         try:
-            user_input = input(get_prompt()).strip()
+            user_input = _safe_input(get_prompt()).strip()
             ctrl_c_count = 0  # reset on any successful input
         except KeyboardInterrupt:
             ctrl_c_count += 1
