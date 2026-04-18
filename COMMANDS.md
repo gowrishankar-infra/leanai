@@ -13,6 +13,7 @@
 - [Git Intelligence](#git-intelligence)
 - [Semantic Bisect](#semantic-bisect)
 - [Adversarial Fuzzing](#adversarial-fuzzing)
+- [Sentinel — Autonomous Security Analyzer](#sentinel--autonomous-security-analyzer)
 - [Code Execution](#code-execution)
 - [TDD Auto-Fix](#tdd-auto-fix)
 - [Reasoning](#reasoning)
@@ -318,6 +319,110 @@ Output: Finds ZeroDivisionError, None inputs, infinity, NaN, and more.
 - Paste your actual functions to find real bugs
 - Use the "Suggested fixes" to improve your code
 - Great for interview prep — tests your code the way interviewers would
+
+---
+
+## Sentinel — Autonomous Security Analyzer
+
+AST-grounded security scan that uses the project brain's dependency graph to trace data flow from external input sources to dangerous sinks. Pattern-matches 12 vulnerability classes. Replaces the older `/security` command (kept as alias).
+
+### Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/sentinel` | Full project scan, all severities |
+| `/sentinel <file>` | Scan a single file |
+| `/sentinel --severity HIGH` | Show only HIGH and CRITICAL findings |
+| `/sentinel --severity CRITICAL` | Critical findings only |
+| `/sentinel --model` | Add model validation pass on high-confidence findings (slower) |
+| `/security` | Alias for `/sentinel` (backwards-compatible) |
+
+### Examples
+
+```
+/brain .
+/sentinel
+```
+Output:
+```
+[Sentinel] Analyzing 106 files for vulnerabilities...
+[Sentinel] Found 23 input sources, 14 dangerous sinks
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Sentinel Security Analysis
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Found 8 potential issues   2 CRITICAL  4 HIGH  2 MEDIUM
+  106 files, 1969 functions, 23 sources, 14 sinks, 3 traced paths, 47ms
+
+── CRITICAL (2) ──
+
+  [VULN-2026-0001] Command Injection
+    api/server.py:142  in  handle_exec
+    Potential command injection: eval() call
+    >     result = eval(user_code)
+    Fix: Avoid eval/exec. Use subprocess with shell=False.
+    Confidence: 70%
+```
+
+```
+/sentinel api/server.py
+/sentinel --severity CRITICAL
+/sentinel --severity HIGH --model
+```
+
+### Detected Vulnerability Classes
+
+| Severity | Classes |
+|----------|---------|
+| CRITICAL | sql_injection, command_injection, unsafe_deserialization |
+| HIGH | path_traversal, ssrf, xss, hardcoded_secret, missing_auth |
+| MEDIUM | open_redirect, weak_crypto, race_condition |
+| LOW | insecure_temp |
+
+### How It Works
+
+1. **Source discovery** — finds functions taking external input (HTTP handlers via decorators, `sys.argv`, `os.environ`, `pickle.loads`, file reads)
+2. **Sink discovery** — finds dangerous operations (`eval`, `exec`, `subprocess shell=True`, SQL string concat, `os.path.join` with input, weak crypto, hardcoded secrets)
+3. **Per-function pattern matching** — 39 sink regex patterns + decorator-based missing-auth detection
+4. **Module-level scans** — hardcoded secrets and weak crypto outside functions
+5. **Taint flow tracing** — BFS through `brain.graph._adjacency` (max depth 5) connects sources to sinks across function boundaries
+6. **Optional model validation** — when `--model` flag is set, asks the local model "is this exploitable?" for high-confidence findings
+7. **Stable IDs** — `VULN-YYYY-NNNN` persisted to `~/.leanai/vulns/` with fingerprint matching, so the same finding gets the same ID across re-scans
+
+### Persistence
+
+Each finding is saved as `~/.leanai/vulns/VULN-YYYY-NNNN.json`:
+
+```json
+{
+  "vuln_id": "VULN-2026-0001",
+  "vuln_class": "command_injection",
+  "severity": "CRITICAL",
+  "confidence": 0.7,
+  "filepath": "api/server.py",
+  "function_name": "handle_exec",
+  "line": 142,
+  "source_type": "http_input",
+  "sink_type": "eval() call",
+  "description": "Potential command injection: eval() call",
+  "code_snippet": "    result = eval(user_code)",
+  "taint_path": ["handle_exec"],
+  "fix_suggestion": "Avoid eval/exec...",
+  "fingerprint": "e4424553a5",
+  "timestamp": 1776442166.99
+}
+```
+
+These IDs feed into upcoming phases: **ChainBreaker (M2)** for multi-stage attack simulation, **ExploitForge (M3)** for PoC generation, **Watchguard (M9)** for real-time scanning.
+
+### Tips
+
+- Run `/brain .` first — Sentinel needs the brain's AST and dependency graph
+- The pure pattern-matching scan is fast (milliseconds). Only use `--model` when you need fewer false positives
+- Test/example directories are auto-skipped for hardcoded-secret detection (too noisy)
+- Comments are stripped before regex matching, so commented-out `eval()` won't trigger
+- Findings persist across sessions — run `/sentinel` again later and finding IDs stay stable
 
 ---
 

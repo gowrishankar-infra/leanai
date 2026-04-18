@@ -25,6 +25,7 @@ from core.code_quality import CodeQualityEnhancer
 from core.code_verifier import CodeGroundedVerifier
 from core.agac import AGACEngine
 from core.cascade import CascadeInference
+from core.sentinel import SentinelEngine, Severity, format_findings_report
 from core.react import ReActReasoner
 from core.mixture_of_agents import MixtureOfAgents
 from core.streaming import StreamingGenerator, StreamConfig, print_streaming_header, print_streaming_footer
@@ -126,7 +127,110 @@ def _truncate_repetition(text: str, max_word_repeats: int = 4, max_phrase_repeat
     return text
 
 
+def _reset_windows_terminal():
+    """
+    Reset Windows console to clean line-input mode at startup.
+
+    Required because:
+      - A previous interrupted session (e.g. Ctrl+C during model load)
+        may have left the console with ECHO_INPUT or LINE_INPUT disabled,
+        causing the next `python main.py` to appear "frozen" — cursor
+        blinks but typing doesn't show.
+      - llama.cpp's stderr diagnostics can desync the input buffer.
+      - Some PowerShell sessions need ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        explicitly set for ANSI color codes to work.
+      - tqdm/colorama/huggingface progress bars call SetConsoleMode and
+        do not always restore it cleanly on exit.
+
+    Safe no-op on non-Windows.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+
+        STD_INPUT_HANDLE = -10
+        STD_OUTPUT_HANDLE = -11
+        ENABLE_PROCESSED_INPUT = 0x0001
+        ENABLE_LINE_INPUT = 0x0002
+        ENABLE_ECHO_INPUT = 0x0004
+        ENABLE_PROCESSED_OUTPUT = 0x0001
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+
+        # Restore stdin to default cooked mode (echo + line buffer + ctrl-c)
+        h_in = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        if h_in and h_in != -1:
+            kernel32.SetConsoleMode(
+                h_in,
+                ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT,
+            )
+
+        # Ensure stdout supports ANSI escape codes (color, cursor moves)
+        h_out = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        if h_out and h_out != -1:
+            current = wintypes.DWORD()
+            if kernel32.GetConsoleMode(h_out, ctypes.byref(current)):
+                kernel32.SetConsoleMode(
+                    h_out,
+                    current.value | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+                )
+
+        # Drain any leftover keystrokes from an interrupted prior session
+        try:
+            import msvcrt
+            while msvcrt.kbhit():
+                msvcrt.getch()
+        except ImportError:
+            pass
+
+    except Exception:
+        # Never fail startup just because terminal reset didn't work
+        pass
+
+
+def _force_terminal_restore_on_exit():
+    """
+    Register an atexit handler that restores the Windows console to
+    cooked mode on EVERY exit path — clean quit, sys.exit, uncaught
+    exception, anything.
+
+    This is the critical fix for the "second run can't type" bug:
+    libraries like tqdm, colorama, and llama-cpp-python modify the
+    console mode at runtime and don't always restore it on exit.
+    Without this handler, the next `python main.py` in the same
+    terminal inherits the broken state and `input()` doesn't echo.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import atexit
+
+        def _on_exit():
+            try:
+                # Force terminal back to cooked mode
+                _reset_windows_terminal()
+                # Flush whatever's pending so the shell prompt renders cleanly
+                try:
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        atexit.register(_on_exit)
+    except Exception:
+        pass
+
+
 def main():
+    # FIRST — reset terminal in case a prior session left it broken,
+    # AND register an atexit hook so we restore it cleanly on this exit too
+    _reset_windows_terminal()
+    _force_terminal_restore_on_exit()
+
     print_banner()
     print(f"  {C.DIM}Initializing LeanAI (full integration)...{C.RESET}")
 
@@ -389,13 +493,33 @@ def main():
     # COMMAND LOOP
     # ══════════════════════════════════════════════════════════════
 
+    ctrl_c_count = 0  # require two consecutive Ctrl+C to actually exit
+
     while True:
         try:
             user_input = input(get_prompt()).strip()
-        except (EOFError, KeyboardInterrupt):
+            ctrl_c_count = 0  # reset on any successful input
+        except KeyboardInterrupt:
+            ctrl_c_count += 1
+            if ctrl_c_count >= 2:
+                print(f"\n  {C.DIM}Goodbye!{C.RESET}")
+                sessions.end_session(current_session.id)
+                sessions.save_all()
+                try:
+                    speed.cache._save()
+                except Exception:
+                    pass
+                break
+            print(f"\n  {C.DIM}(Press Ctrl+C again or type /quit to exit){C.RESET}")
+            continue
+        except EOFError:
             print(f"\n  {C.DIM}Goodbye!{C.RESET}")
             sessions.end_session(current_session.id)
             sessions.save_all()
+            try:
+                speed.cache._save()
+            except Exception:
+                pass
             break
 
         if not user_input:
@@ -404,11 +528,14 @@ def main():
         cmd = user_input.lower().strip()
 
         # ── Exit ──────────────────────────────────────────────────
-        if cmd in ("/quit", "/exit", "/q"):
-            print("Goodbye!")
+        # Recognize both slash-commands AND bare words so people don't
+        # accidentally trigger chat generation when they type "exit"
+        if cmd in ("/quit", "/exit", "/q", "exit", "quit", "bye", ":q", ":quit"):
+            print(f"  {C.DIM}Goodbye!{C.RESET}")
             sessions.end_session(current_session.id)
             sessions.save_all()
             speed.cache._save()  # Save response cache to disk
+            _reset_windows_terminal()  # belt-and-suspenders: restore terminal before exit
             break
 
         # ── Help ──────────────────────────────────────────────────
@@ -952,63 +1079,61 @@ def main():
         # SECURITY — scan code for vulnerabilities
         # ══════════════════════════════════════════════════════════
 
-        elif cmd.startswith("/security"):
-            target = user_input[9:].strip()
-            if not target:
-                print("Usage: /security <filename or code>")
-                print("  Scans code for security vulnerabilities.")
+        elif cmd.startswith("/sentinel") or cmd.startswith("/security"):
+            # Parse args: /sentinel [target] [--model] [--severity LEVEL]
+            tokens = user_input.split()
+            target = None
+            use_model = False
+            severity_floor = Severity.LOW
+
+            i = 1
+            while i < len(tokens):
+                tok = tokens[i]
+                if tok == "--model":
+                    use_model = True
+                elif tok == "--severity" and i + 1 < len(tokens):
+                    sev = tokens[i + 1].upper()
+                    if sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+                        severity_floor = Severity[sev]
+                    i += 1
+                elif not tok.startswith("--"):
+                    target = tok
+                i += 1
+
+            if brain is None:
+                print(f"  {C.DIM}Sentinel needs the project brain. Run /brain . first.{C.RESET}")
                 continue
 
-            print(f"  {C.DIM}Scanning for vulnerabilities...{C.RESET}", flush=True)
+            print(f"  {C.DIM}Sentinel: AST-grounded security analysis...{C.RESET}", flush=True)
 
-            # If it's a filename and brain is loaded, read the file
-            code_to_scan = target
-            if brain and not target.startswith("def ") and not target.startswith("import "):
-                for rel_path in brain._file_analyses.keys():
-                    if target.lower() in rel_path.lower():
-                        try:
-                            full_path = os.path.join(brain.config.project_path, rel_path)
-                            with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-                                code_to_scan = f.read(5000)
-                            code_to_scan = f"File: {rel_path}\n\n{code_to_scan}"
-                        except Exception:
-                            pass
-                        break
+            # Build a model_fn wrapper if --model requested
+            model_fn = None
+            if use_model:
+                def _sentinel_model(prompt: str) -> str:
+                    cfg = GenerationConfig(max_tokens=128, temperature=0.1)
+                    r = engine.generate(prompt, config=cfg)
+                    return getattr(r, "text", str(r))
+                model_fn = _sentinel_model
 
-            security_prompt = (
-                "Perform a security audit on this code. Check for:\n"
-                "- SQL injection\n"
-                "- XSS (cross-site scripting)\n"
-                "- Command injection\n"
-                "- Path traversal\n"
-                "- Hardcoded secrets/credentials\n"
-                "- Insecure deserialization\n"
-                "- Missing input validation\n"
-                "- Insecure file operations\n"
-                "- CORS misconfiguration\n"
-                "- Missing authentication/authorization\n\n"
-                "For each issue found, state:\n"
-                "- Severity (Critical/High/Medium/Low)\n"
-                "- What the vulnerability is\n"
-                "- Where it is (line or function)\n"
-                "- How to fix it (show corrected code)\n\n"
-                "If no issues found, say 'No security issues detected.'\n\n"
-                f"Code to audit:\n```\n{code_to_scan}\n```"
-            )
+            try:
+                sentinel = SentinelEngine(brain, model_fn=model_fn)
+                findings, stats = sentinel.scan(
+                    target=target,
+                    severity_floor=severity_floor,
+                    use_model=use_model,
+                    verbose=True,
+                )
+                print(format_findings_report(findings, stats, color=True))
 
-            config = GenerationConfig(max_tokens=1536, temperature=0.1)
-            resp = engine.generate(security_prompt, config=config)
-            text = getattr(resp, "text", str(resp))
-
-            print_response_header()
-            print(format_response(text))
-            separator()
-
-            confidence = getattr(resp, "confidence", 0.7)
-            if isinstance(confidence, float) and 0 < confidence <= 1.0:
-                confidence *= 100
-            print(format_confidence(confidence, "Security Audit"))
-            sessions.add_exchange(query=user_input, response=text, tier="security", confidence=confidence)
+                # Save to session
+                summary = (
+                    f"Sentinel: {len(findings)} findings "
+                    f"({', '.join(f'{c} {s}' for s, c in stats.by_severity.items())}) "
+                    f"in {stats.time_ms:.0f}ms"
+                )
+                sessions.add_exchange(query=user_input, response=summary, tier="sentinel", confidence=85)
+            except Exception as e:
+                print(f"  {C.DIM}Sentinel error: {e}{C.RESET}")
 
         # ══════════════════════════════════════════════════════════
         # INDEX & ASK
@@ -1946,6 +2071,24 @@ def main():
                             else:
                                 print(f"\nError: {rec_result.error}")
                                 continue
+            except KeyboardInterrupt:
+                # User hit Ctrl+C during model loading or generation.
+                # Cancel cleanly and return to the prompt instead of crashing.
+                print(f"\n  {C.DIM}[Cancelled — back to prompt]{C.RESET}")
+                # Stop any background pre-generation that may still be running
+                try:
+                    stop_anticipatory()
+                except Exception:
+                    pass
+                # Re-flush stdio so the next prompt renders cleanly
+                try:
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+                # Reset terminal mode in case llama.cpp's stderr scrambled it
+                _reset_windows_terminal()
+                continue
             except Exception as e:
                 print(f"\nError: {e}")
                 continue

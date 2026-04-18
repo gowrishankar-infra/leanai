@@ -483,6 +483,33 @@ AGAC auto-fixed:   from core.server import process_user
 
 **What makes this better than Opus:** Opus 4.6 would have left `core.services` in the code — it has no AST to check against. Your copy-pasted code would fail with `ModuleNotFoundError`. LeanAI's code works on the first paste.
 
+### Sentinel: Autonomous Security Analyzer *(M1 — Mythos-inspired, AST-grounded)*
+
+`/sentinel` runs an AST-grounded security scan on your project. It walks every function in the brain, identifies external input sources (HTTP handlers, CLI args, file reads, env vars, deserialization), identifies dangerous sinks (eval, exec, subprocess shell=True, SQL string concat, pickle.loads, weak crypto, hardcoded secrets), and pattern-matches 12 vulnerability classes. It also traces taint flow from sources to sinks through the brain's 12,860 dependency edges.
+
+```
+/sentinel                          # full project scan, all severities
+/sentinel core/server.py           # scan a single file
+/sentinel --severity HIGH          # show only HIGH and CRITICAL
+/sentinel --severity CRITICAL      # critical only
+/sentinel --model                  # add model validation pass (slower)
+```
+
+Detected vulnerability classes:
+
+```
+CRITICAL: sql_injection, command_injection, unsafe_deserialization
+HIGH:     path_traversal, ssrf, xss, hardcoded_secret, missing_auth
+MEDIUM:   open_redirect, weak_crypto, race_condition
+LOW:      insecure_temp
+```
+
+Findings are persisted to `~/.leanai/vulns/VULN-YYYY-NNNN.json` with stable IDs and fingerprint matching across re-scans. These IDs feed into upcoming phases — ChainBreaker (M2) for multi-stage attack simulation, ExploitForge (M3) for PoC generation, and Watchguard (M9) for real-time scanning on file changes.
+
+Replaces the previous `/security` command (kept as alias). Pure pattern matching runs in milliseconds; the optional `--model` validation pass takes ~30 seconds per high-confidence finding.
+
+**What makes this better than Opus:** Opus 4.6 would do the same scan as a single LLM call — slower, no persistence, no taint flow tracing through your dependency graph, no stable IDs. Sentinel uses your real AST as ground truth, runs in milliseconds, and persists findings so other tools can build on them.
+
 ### DFSG: Dynamic Few-Shot Grounding *(novel — no other tool does this)*
 
 Before generating code, LeanAI automatically finds the most similar function in YOUR codebase and injects it as a few-shot example. The model then generates code that matches YOUR naming conventions, error handling patterns, and docstring style.
