@@ -6,10 +6,12 @@ Orchestrates multi-step task execution with file-content-aware code generation.
 import os
 import json
 import time
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any, List
+from typing import Optional, Callable, Dict, Any, List, Union
 from dataclasses import dataclass, field
 
 from agents.planner import (
@@ -123,16 +125,40 @@ class AgenticPipeline:
         except (FileNotFoundError, IOError):
             return None
 
-    def _run_command(self, command: str, workspace: str, timeout: int = 30) -> tuple:
+    def _run_command(self, command: Union[str, List[str]], workspace: str, timeout: int = 30) -> tuple:
+        """
+        Run a shell command in workspace.
+
+        SECURITY: shell=False to prevent command injection (VULN-2026-0001).
+        Accepts either:
+          - a list of args: ["python", "script.py"] — passed directly
+          - a string: "python script.py" — split with shlex (POSIX rules)
+
+        For Windows compatibility we use posix=False on shlex.split to
+        keep Windows-style backslashes intact in paths.
+        """
         try:
+            if isinstance(command, str):
+                # shlex.split handles quoted arguments correctly.
+                # On Windows, posix=False keeps backslashes in paths from being
+                # treated as escape characters.
+                args = shlex.split(command, posix=(os.name != 'nt'))
+            else:
+                args = list(command)
+
+            if not args:
+                return False, "Empty command"
+
             result = subprocess.run(
-                command, shell=True, cwd=workspace,
+                args, shell=False, cwd=workspace,
                 capture_output=True, text=True, timeout=timeout,
             )
             output = result.stdout + result.stderr
             return result.returncode == 0, output.strip()
         except subprocess.TimeoutExpired:
             return False, f"Command timed out after {timeout}s"
+        except FileNotFoundError as e:
+            return False, f"Command not found: {e}"
         except Exception as e:
             return False, str(e)
 
@@ -146,8 +172,9 @@ class AgenticPipeline:
         try:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 f.write(code)
+            # Pass as list to _run_command — no shell, no injection risk
             success, output = self._run_command(
-                f"python {tmp_path}", workspace, timeout=self.config.step_timeout
+                [sys.executable, tmp_path], workspace, timeout=self.config.step_timeout
             )
             return success, output
         finally:
@@ -228,8 +255,14 @@ class AgenticPipeline:
         # Verify by running the file
         if step.target_file and step.target_file.endswith(".py"):
             full_path = os.path.join(plan.workspace, step.target_file)
-            verify_cmd = f'python -c "exec(open(r\'{full_path}\').read())"'
+            # SECURITY: Pass as list to _run_command (shell=False) — no injection
+            # via filename with shell metacharacters. Equivalent behavior to the
+            # old `python -c "exec(open(file).read())"` pattern but without the
+            # f-string-into-shell risk (VULN-2026-0002).
+            verify_cmd = [sys.executable, full_path]
             if step.verification:
+                # User-provided verification command — keep accepting strings
+                # (will be split safely by _run_command's shlex).
                 verify_cmd = step.verification
             success, output = self._run_command(verify_cmd, plan.workspace, self.config.step_timeout)
             if not success:
@@ -267,7 +300,8 @@ class AgenticPipeline:
 
         # Run the tests
         test_path = os.path.join(plan.workspace, step.target_file)
-        cmd = f"python -m pytest {test_path} -v --tb=short"
+        # SECURITY: list form, no shell interpretation
+        cmd = [sys.executable, "-m", "pytest", test_path, "-v", "--tb=short"]
         success, output = self._run_command(cmd, plan.workspace, self.config.step_timeout)
         step.output = output[:1000]
         if not success:
@@ -300,11 +334,10 @@ class AgenticPipeline:
         # Default: run pytest on all test files in workspace
         test_files = [f for f in plan.created_files if "test" in f.lower()]
         if test_files:
-            # Use the workspace as cwd and run pytest on the test files directly
-            test_paths = " ".join(
-                os.path.join(plan.workspace, f) for f in test_files
-            )
-            cmd = f"python -m pytest {test_paths} -v --tb=short"
+            # SECURITY: build list, no shell interpretation, no quoting needed
+            cmd = [sys.executable, "-m", "pytest"]
+            cmd.extend(os.path.join(plan.workspace, f) for f in test_files)
+            cmd.extend(["-v", "--tb=short"])
             success, output = self._run_command(cmd, plan.workspace, self.config.step_timeout)
             step.output = output[:1000]
             if not success:
@@ -354,7 +387,8 @@ class AgenticPipeline:
         # Re-verify based on step type
         if step.step_type == StepType.RUN_TEST:
             test_path = os.path.join(plan.workspace, step.target_file)
-            cmd = f"python -m pytest {test_path} -v --tb=short"
+            # SECURITY: Pass as list — no shell, no injection (VULN-2026-0003)
+            cmd = [sys.executable, "-m", "pytest", test_path, "-v", "--tb=short"]
             success, output = self._run_command(cmd, plan.workspace, self.config.step_timeout)
             step.output = output[:1000]
             if success:
@@ -364,7 +398,8 @@ class AgenticPipeline:
             return False
         elif step.target_file and step.target_file.endswith(".py"):
             full_path = os.path.join(plan.workspace, step.target_file)
-            verify_cmd = f'python -c "exec(open(r\'{full_path}\').read())"'
+            # SECURITY: list form, no shell, equivalent to old exec(open()) pattern
+            verify_cmd = [sys.executable, full_path]
             if step.verification:
                 verify_cmd = step.verification
             success, output = self._run_command(verify_cmd, plan.workspace, self.config.step_timeout)

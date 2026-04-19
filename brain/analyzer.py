@@ -30,7 +30,12 @@ class FunctionInfo:
     decorators: List[str] = field(default_factory=list)
     is_method: bool = False
     class_name: Optional[str] = None
-    calls: List[str] = field(default_factory=list)  # functions this one calls
+    calls: List[str] = field(default_factory=list)  # functions this one calls (names only)
+    # Structured calls: list of (receiver, method) tuples. Populated by
+    # _CallCollector for Python files. Enables the dependency graph to
+    # disambiguate calls like `subprocess.run(...)` from `self.run(...)`.
+    # (M2.1 fix for name-only collision false positives.)
+    call_sites: List[tuple] = field(default_factory=list)
     complexity: int = 1  # cyclomatic complexity estimate
 
     @property
@@ -46,7 +51,8 @@ class FunctionInfo:
             "args": self.args, "return_type": self.return_type,
             "docstring": self.docstring, "decorators": self.decorators,
             "is_method": self.is_method, "class_name": self.class_name,
-            "calls": self.calls, "complexity": self.complexity,
+            "calls": self.calls, "call_sites": self.call_sites,
+            "complexity": self.complexity,
             "qualified_name": self.qualified_name,
         }
 
@@ -138,16 +144,62 @@ class FileAnalysis:
 
 
 class _CallCollector(ast.NodeVisitor):
-    """Collects function/method calls from an AST subtree."""
+    """
+    Collects function/method calls from an AST subtree.
+
+    Two shapes of data are produced:
+
+    - self.calls: List[str]
+        Flat list of just the method/function names. Kept for backwards
+        compatibility with any existing code that reads func.calls.
+
+    - self.call_sites: List[Tuple[str, str]]
+        Structured (receiver, method) tuples. Used by the dependency graph
+        to avoid name-only collisions that create false edges (M2.1 fix).
+
+        Receiver encoding:
+          ""           — bare call,          e.g.  isinstance(x, str)
+          "self"       — instance method,    e.g.  self.run(...)
+          "cls"        — classmethod,        e.g.  cls.build(...)
+          "name"       — attribute on name,  e.g.  subprocess.run(...)
+          "a.b"        — deeper chain,       e.g.  self.planner.build(...)
+          "_expr_"     — non-trivial base,   e.g.  obj().run() → ("_expr_", "run")
+
+        The graph uses this receiver to:
+          1) skip resolution when receiver is a known external module
+          2) prefer same-class resolution when receiver is "self"
+          3) prefer same-file resolution as a tiebreaker
+    """
 
     def __init__(self):
         self.calls: List[str] = []
+        self.call_sites: List[Tuple[str, str]] = []
+
+    # Render an ast.Attribute/ast.Name chain into a string receiver like "a.b.c"
+    def _render_receiver(self, node) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            base = self._render_receiver(node.value)
+            if base and base != "_expr_":
+                return f"{base}.{node.attr}"
+            return "_expr_"
+        # Calls, subscripts, literals, etc. — non-trivial receiver
+        return "_expr_"
 
     def visit_Call(self, node):
         if isinstance(node.func, ast.Name):
-            self.calls.append(node.func.id)
+            # Bare call: foo(...)
+            name = node.func.id
+            self.calls.append(name)
+            self.call_sites.append(("", name))
         elif isinstance(node.func, ast.Attribute):
-            self.calls.append(node.func.attr)
+            # Attribute call: receiver.method(...)
+            method = node.func.attr
+            receiver = self._render_receiver(node.func.value)
+            self.calls.append(method)
+            self.call_sites.append((receiver, method))
+        # else: node.func is a Call / Subscript / etc — skip, we don't track these
         self.generic_visit(node)
 
 
@@ -304,6 +356,7 @@ def analyze_python_file(filepath: str, source: Optional[str] = None) -> FileAnal
                 is_method=is_method,
                 class_name=class_name,
                 calls=call_collector.calls,
+                call_sites=list(call_collector.call_sites),
                 complexity=cc.complexity,
             )
             result.functions.append(func)

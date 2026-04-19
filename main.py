@@ -165,6 +165,7 @@ from core.code_verifier import CodeGroundedVerifier
 from core.agac import AGACEngine
 from core.cascade import CascadeInference
 from core.sentinel import SentinelEngine, Severity, format_findings_report
+from core.chainbreaker import ChainBreakerEngine, format_chains_report
 from core.react import ReActReasoner
 from core.mixture_of_agents import MixtureOfAgents
 from core.streaming import StreamingGenerator, StreamConfig, print_streaming_header, print_streaming_footer
@@ -691,6 +692,7 @@ def main():
 ║  /test <func>     Auto-generate unit tests            ║
 ║  /diff            Explain last git commit             ║
 ║  /security <file> Scan code for vulnerabilities       ║
+║  /chainbreak     Multi-stage attack chains (M2)        ║
 ║                                                        ║
 ║ BUILD                                                  ║
 ║  /build <task>     Multi-step project builder           ║
@@ -1273,6 +1275,92 @@ def main():
                 sessions.add_exchange(query=user_input, response=summary, tier="sentinel", confidence=85)
             except Exception as e:
                 print(f"  {C.DIM}Sentinel error: {e}{C.RESET}")
+
+        # ══════════════════════════════════════════════════════════
+        # CHAINBREAKER — multi-stage attack simulation (M2)
+        # ══════════════════════════════════════════════════════════
+        # Reads Sentinel's persisted findings and traces forward through the
+        # brain's call graph to find chains that reach a real "capability"
+        # sink (rce / exfil / privesc / secret_read / persistence / destroy).
+        # Each chain becomes a CHAIN-YYYY-NNNN persisted to ~/.leanai/chains.
+
+        elif cmd.startswith("/chainbreak") or cmd.startswith("/chain"):
+            # Parse args: /chainbreak [--from VULN-ID] [--depth N]
+            #             [--severity LEVEL] [--include-tests]
+            #             [--min-confidence FLOAT] [--allow-unreachable]
+            tokens = user_input.split()
+            from_vuln_id = None
+            max_depth = 4
+            cb_severity_floor = Severity.MEDIUM
+            include_tests = False
+            min_confidence = 0.35  # M2.1 default — filters name-alias artifacts
+            allow_unreachable = False  # M2.2 — keep cross-file chains with no import path
+
+            i = 1
+            while i < len(tokens):
+                tok = tokens[i]
+                if tok == "--from" and i + 1 < len(tokens):
+                    from_vuln_id = tokens[i + 1]
+                    i += 1
+                elif tok == "--depth" and i + 1 < len(tokens):
+                    try:
+                        max_depth = max(1, min(8, int(tokens[i + 1])))
+                    except ValueError:
+                        pass
+                    i += 1
+                elif tok == "--severity" and i + 1 < len(tokens):
+                    sev = tokens[i + 1].upper()
+                    if sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+                        cb_severity_floor = Severity[sev]
+                    i += 1
+                elif tok == "--include-tests":
+                    include_tests = True
+                elif tok == "--min-confidence" and i + 1 < len(tokens):
+                    try:
+                        min_confidence = max(0.0, min(1.0, float(tokens[i + 1])))
+                    except ValueError:
+                        pass
+                    i += 1
+                elif tok == "--allow-unreachable":
+                    allow_unreachable = True
+                i += 1
+
+            if brain is None:
+                print(f"  {C.DIM}ChainBreaker needs the project brain. Run /brain . first.{C.RESET}")
+                continue
+
+            print(f"  {C.DIM}ChainBreaker: tracing multi-stage attack chains "
+                  f"(depth {max_depth}, severity ≥ {cb_severity_floor}, "
+                  f"min-confidence {min_confidence:.2f}"
+                  f"{', allow-unreachable' if allow_unreachable else ''})...{C.RESET}", flush=True)
+
+            try:
+                cbe = ChainBreakerEngine(
+                    brain,
+                    include_tests=include_tests,
+                    allow_unreachable=allow_unreachable,
+                )
+                chains, cb_stats = cbe.analyze(
+                    from_vuln_id=from_vuln_id,
+                    max_depth=max_depth,
+                    severity_floor=cb_severity_floor,
+                    min_confidence=min_confidence,
+                    verbose=True,
+                )
+                print(format_chains_report(chains, cb_stats, color=True))
+
+                if not chains and cb_stats.findings_loaded == 0:
+                    print(f"  {C.DIM}Tip: run /sentinel first to populate findings, "
+                          f"then re-run /chainbreak.{C.RESET}")
+
+                summary = (
+                    f"ChainBreaker: {len(chains)} chain(s) "
+                    f"({', '.join(f'{c} {s}' for s, c in cb_stats.by_severity.items())}) "
+                    f"in {cb_stats.time_ms:.0f}ms"
+                )
+                sessions.add_exchange(query=user_input, response=summary, tier="chainbreak", confidence=85)
+            except Exception as e:
+                print(f"  {C.DIM}ChainBreaker error: {e}{C.RESET}")
 
         # ══════════════════════════════════════════════════════════
         # INDEX & ASK

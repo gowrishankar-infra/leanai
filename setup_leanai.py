@@ -348,7 +348,17 @@ def main():
         answer = input("  Launch LeanAI now? (y/n): ").strip().lower()
         if answer in ("y", "yes", ""):
             print()
-            os.system(f"{python_cmd} main.py")
+            # SECURITY: subprocess.run with a list and shell=False — no
+            # injection risk even if python_cmd contains spaces or special
+            # chars (VULN-2026-0002 / "VULN-2026-0011" in earlier scan).
+            # Replaces: os.system(f"{python_cmd} main.py")
+            try:
+                subprocess.run([python_cmd, "main.py"], shell=False, check=False)
+            except FileNotFoundError:
+                print(f"  Could not launch: {python_cmd} not found")
+                print("  Run 'python main.py' manually when ready.")
+            except KeyboardInterrupt:
+                pass
     except (EOFError, KeyboardInterrupt):
         print("\n  Run 'python main.py' when ready.")
 
