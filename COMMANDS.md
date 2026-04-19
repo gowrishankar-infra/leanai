@@ -426,6 +426,275 @@ These IDs feed into upcoming phases: **ChainBreaker (M2)** for multi-stage attac
 
 ---
 
+## Attack Chain Analysis (M2 — ChainBreaker)
+
+Take Sentinel's isolated findings and walk the brain's call graph forward to discover whether tainted input can reach a high-value capability sink. Isolated vulnerabilities become narrated attack chains.
+
+### Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/chainbreak` | Trace chains from all MEDIUM+ findings |
+| `/chainbreak --from VULN-2026-0001` | Trace from a specific Sentinel finding |
+| `/chainbreak --depth 6` | Walk up to 6 hops (default 4, max 8) |
+| `/chainbreak --severity LOW` | Include LOW-severity entries (default MEDIUM) |
+| `/chainbreak --min-confidence 0.0` | Disable the confidence filter |
+| `/chainbreak --allow-unreachable` | Include speculative cross-file chains |
+| `/chainbreak --include-tests` | Include test/example directories |
+
+### Example
+
+```
+/chainbreak
+```
+
+Output:
+```
+ChainBreaker: tracing multi-stage attack chains (depth 4, severity ≥ MEDIUM, min-confidence 0.35)...
+[ChainBreaker] Loaded 15 entry vulnerabilities (severity >= MEDIUM)
+
+  ✓ No exploitable attack chains found.
+
+  Findings analyzed: 15  Entries resolved: 12  Functions visited: 47  Time: 231ms
+  Skipped 3 stale finding(s) — the referenced code no longer matches the reported sink.
+```
+
+### Capability stages
+
+Each chain ends at one of six capability sinks:
+
+| Stage | Meaning |
+|-------|---------|
+| `rce` | Remote code execution (eval / exec / subprocess) |
+| `exfil` | Data egress / network send / file write |
+| `privesc` | Privilege-escalating context (sudo / setuid) |
+| `secret_read` | Credential or secret access |
+| `persistence` | Write to startup-persisted location |
+| `destroy` | Destructive file/db ops |
+
+### Notes
+
+- Each chain gets a fingerprinted `CHAIN-YYYY-NNNN` ID, persisted to `~/.leanai/chains/CHAIN-YYYY-NNNN.json`
+- Confidence decays with chain length. Cross-file chains with no valid import path are dropped by default (name-alias artifacts)
+- The stale-finding guard automatically skips findings whose referenced code has since been patched
+- Chains feed forward into ExploitForge (M3), AutoFix (M5), and Aegis (M7)
+
+---
+
+## PoC Generation (M3 — ExploitForge)
+
+Turn Sentinel findings and ChainBreaker chains into runnable proof-of-concept demonstrations. Each PoC is benign-payload only, hard-guarded against accidental execution, and restricted to files inside your project.
+
+### Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/exploit` | List available findings/chains (same as `--list`) |
+| `/exploit --list` | Show all findings + chains, grouped by vuln class |
+| `/exploit --templates` | Show all 12 supported vuln classes |
+| `/exploit --from VULN-2026-0007` | Generate PoC from a specific finding |
+| `/exploit --from CHAIN-2026-0001` | Generate PoC from an attack chain |
+| `/exploit --all` | Generate PoCs for all findings with templates (prompts if >10) |
+| `/exploit --view EXPLOIT-2026-0001` | Re-show a generated PoC's README + first 40 lines |
+
+### Example
+
+```
+/exploit --from VULN-2026-0007
+```
+
+Output:
+```
+ExploitForge: generating PoC(s)...
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ExploitForge — PoC Generation Report
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Generated 1 PoC(s)
+  Time: 8ms
+
+  How to run each PoC:
+  1. cd <output_dir>
+  2. export LEANAI_POC_CONFIRM="I understand this demonstrates a vulnerability"
+  3. python poc.py
+
+  [EXPLOIT-2026-0001] weak_crypto  (from VULN-2026-0007, MEDIUM)
+    Target: core/sentinel.py:1009 in SentinelEngine._persist
+    Output: ~/.leanai/exploits/EXPLOIT-2026-0001
+```
+
+### Running a generated PoC
+
+Windows:
+```cmd
+cd %USERPROFILE%\.leanai\exploits\EXPLOIT-2026-0001
+set LEANAI_POC_CONFIRM=I understand this demonstrates a vulnerability
+python poc.py
+```
+
+Linux/Mac:
+```bash
+cd ~/.leanai/exploits/EXPLOIT-2026-0001
+export LEANAI_POC_CONFIRM="I understand this demonstrates a vulnerability"
+python poc.py
+```
+
+Look for the `▶ VULN_CONFIRMED` line. That means the vulnerable pattern was triggered as designed.
+
+### Supported templates
+
+| Class | Demonstrates |
+|-------|-------------|
+| `command_injection` | Shell metacharacter interpretation via `shell=True` subprocess |
+| `sql_injection` | WHERE-clause bypass via string concatenation |
+| `path_traversal` | Directory escape via `../` sequences |
+| `unsafe_deserialization` | Arbitrary code execution via `pickle.loads` |
+| `xss` | Unescaped user content in HTML |
+| `ssrf` | Cloud metadata URL access via user-controlled host |
+| `weak_crypto` | MD5 collision using published collision blocks |
+| `hardcoded_secret` | Secret recovery from git history after patch |
+| `race_condition` | TOCTOU file swap via thread |
+| `open_redirect` | External redirect via user-controlled next URL |
+| `insecure_temp` | Predictable path from `tempfile.mktemp` |
+| `missing_auth` | Destructive action without auth check |
+
+### Safety boundaries (hard-coded)
+
+- **Benign payloads only** — all templates use `echo VULN_CONFIRMED`-style markers. No network calls, no destructive commands.
+- **User confirmation required** — `poc.py` refuses to run unless `LEANAI_POC_CONFIRM` env var is set to the exact confirmation string.
+- **Import-refusal guard** — `poc.py` raises RuntimeError if imported rather than run directly.
+- **Project-root enforcement** — ExploitForge refuses to generate PoCs for targets outside the scanned project root. Absolute paths and `../` traversals are rejected.
+
+### Notes
+
+- Each PoC has a stable `EXPLOIT-YYYY-NNNN` ID. Re-running on the same finding returns the same ID. Adding a new finding creates a new ID while preserving existing ones.
+- PoCs ship with both a vulnerable and a fixed implementation so you can see the contrast.
+- The README.md inside each exploit directory links the PoC back to the source Sentinel finding or ChainBreaker chain.
+- ExploitForge is a debugging aid, not a weapon. Do not use the templates against systems you do not own.
+
+---
+
+## Code Archaeology (M4 — SourceForensics)
+
+Deterministic answers to questions about function history. No LLM involved. Uses `git log -L` for line-range-tracked commit history and Python's `ast` module for structural questions. Sub-second per query. Never hallucinates a commit hash.
+
+### Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/forensics <function>` | Full archaeology report (genesis + stability + authors + history + co-evolution) |
+| `/forensics --genesis <fn>` | When/who/which commit created the function |
+| `/forensics --history <fn>` | Commit-by-commit history (default 20, max 200) |
+| `/forensics --history 50 <fn>` | Limit history to N commits |
+| `/forensics --coevolve <fn>` | Functions that change in the same commits (Jaccard-ranked) |
+| `/forensics --coevolve 5 <fn>` | Top N co-evolving functions |
+| `/forensics --stability <fn>` | Churn score 0-100 + interpretation |
+| `/forensics --authors <fn>` | Author breakdown + bus factor |
+| `/forensics --file <path>` | Genesis + stability for every function in a file |
+| `/forensics --dead-code` | Project-wide dead-code sweep |
+| `/forensics --json <...>` | Emit JSON instead of formatted output (any subcommand) |
+
+### Example
+
+```
+/forensics ProjectBrain.__init__
+```
+
+Output:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  SourceForensics — ProjectBrain.__init__
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  File:               brain/project_brain.py
+  Current lines:      24
+  Current complexity: 3
+
+Genesis:
+  First appeared:  2026-04-09
+  First commit:    285ffc7  (Gowri Shankar)
+  Last changed:    2026-04-14  (Gowri Shankar)
+  Age:             4 days, 2 commit(s) touched it
+
+Stability:
+  Score:              41/100
+  Interpretation:     Active — meaningful change rate. Be cautious.
+  Churn rate:         6.00 changes / 30 days
+
+Authors:
+  ● Gowri Shankar                2 commit(s)  (100%)
+  Bus factor: 1  (authors to cover 80%+ of changes)
+
+History:
+  8cee8e5  2026-04-14  Gowri Shankar   +1  -1   LEANAI_HOME support
+  285ffc7  2026-04-09  Gowri Shankar   +458     Phase 7a: Persistent Project Brain
+
+Co-evolution (functions that change together):
+  (no co-evolving functions found)
+```
+
+### Resolving function names
+
+Simple name:
+```
+/forensics my_function
+```
+
+If the name is ambiguous (multiple functions with the same short name across the project), LeanAI will list the candidates and ask you to disambiguate:
+
+```
+No unique match for '__init__'. 12 candidate(s):
+  brain/project_brain.py:ProjectBrain.__init__
+  brain/session_store.py:SessionStore.__init__
+  ...
+Try /forensics <file.py:qname>
+```
+
+File-anchored (for disambiguation):
+```
+/forensics brain/project_brain.py:ProjectBrain.__init__
+```
+
+Qualified name (for methods):
+```
+/forensics DependencyGraph._resolve_with_scope
+```
+
+### Stability score scale
+
+| Score | Meaning |
+|-------|---------|
+| 80-100 | Very stable — rarely changes. Safe to build on. |
+| 60-79 | Moderately stable — occasional changes. |
+| 40-59 | Active — meaningful change rate. Be cautious. |
+| 20-39 | Volatile — churn hotspot. Changes often. |
+| 0-19 | Extremely volatile — consider refactoring or adding tests. |
+
+Formula: `score = 100 - min(100, churn_per_30_days * 10) + long_quiet_bonus`, clamped 0-100.
+
+### Dead-code detection
+
+The sweep is **conservative**: a function is flagged only if ALL of:
+- No inbound call edges of any kind (same-file or cross-file)
+- Its short name does not appear as a word in any other file
+- Not a dunder method (Python calls those by itself)
+- Not in a test directory
+- Not decorated with a framework decorator (`@route`, `@fixture`, etc.)
+- Not a known entry-point name (`main`, `run`, `serve`, `handle`, etc.)
+
+On a well-connected codebase this may return zero candidates. That's an honest result — the codebase is cleanly connected. The sweep is designed to be correct-when-silent, not loud-and-wrong.
+
+### Notes
+
+- Genesis / history / stability / authors / co-evolution all require a git repo. If run outside a git repo, the engine gracefully reports "no git history" and skips those features.
+- Dead-code detection works without git — it's a pure AST + graph analysis.
+- Full reports take 10-20 seconds on codebases with 500+ commits (most time is in co-evolution's per-function git log walk). Single-subcommand queries are much faster (1-5 seconds).
+- All commands accept `--json` for machine-readable output.
+
+---
+
 ## Code Execution
 
 Run Python code directly in LeanAI's sandboxed environment.

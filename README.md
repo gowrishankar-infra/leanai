@@ -510,6 +510,131 @@ Replaces the previous `/security` command (kept as alias). Pure pattern matching
 
 **What makes this better than Opus:** Opus 4.6 would do the same scan as a single LLM call — slower, no persistence, no taint flow tracing through your dependency graph, no stable IDs. Sentinel uses your real AST as ground truth, runs in milliseconds, and persists findings so other tools can build on them.
 
+### ChainBreaker: Multi-Stage Attack Chains *(M2 — builds on Sentinel)*
+
+`/chainbreak` takes Sentinel's isolated findings and walks your brain's call graph forward to discover whether tainted input can reach a high-value capability sink. Isolated findings become narrated attack chains: entry vuln → lateral hops → terminal capability.
+
+```
+/chainbreak                              # trace chains from all MEDIUM+ findings
+/chainbreak --from VULN-2026-0001        # trace from a specific finding
+/chainbreak --depth 6                    # walk up to 6 hops (default 4)
+/chainbreak --severity LOW               # include LOW-severity entries
+/chainbreak --min-confidence 0.0         # disable the confidence filter
+/chainbreak --allow-unreachable          # include speculative cross-file chains
+/chainbreak --include-tests              # include test/example dirs
+```
+
+Six capability stages tracked: `rce`, `exfil`, `privesc`, `secret_read`, `persistence`, `destroy`. Each chain gets a fingerprinted `CHAIN-YYYY-NNNN` ID, a confidence score, and a human-readable narrative. Chains that cross files without a valid import path are filtered by default (they're almost always name-alias artifacts from the model's call resolution). Stale findings — where the flagged sink has since been patched — are automatically skipped and reported.
+
+Each chain persists to `~/.leanai/chains/CHAIN-YYYY-NNNN.json` so ExploitForge (M3), AutoFix (M5), and Aegis (M7) can consume them.
+
+**What makes this better than Opus:** Opus would read individual findings and speculate about connections. ChainBreaker walks the real call graph with receiver-aware resolution, import-reachability filtering, and a Windows-safe node ID parser. The output is structural, not speculative.
+
+### ExploitForge: PoC Generation from Findings *(M3 — safety-first template engine)*
+
+`/exploit` turns Sentinel findings and ChainBreaker chains into **runnable proof-of-concept demonstrations**. Each PoC is self-contained Python, uses benign payloads only, and ships with hard-coded safety guards.
+
+```
+/exploit                                 # list available findings/chains
+/exploit --list                          # same — what's available for PoCs
+/exploit --templates                     # show all supported vuln classes
+/exploit --from VULN-2026-0007           # generate PoC from a finding
+/exploit --from CHAIN-2026-0001          # generate PoC from an attack chain
+/exploit --all                           # generate PoCs for all with templates
+/exploit --view EXPLOIT-2026-0001        # re-show a generated PoC
+```
+
+Each PoC lands in `~/.leanai/exploits/EXPLOIT-YYYY-NNNN/` containing:
+
+```
+poc.py         — runnable demo with safety guards
+README.md      — what it proves, how to run, recommended fix
+metadata.json  — stable ID, fingerprint, source finding
+```
+
+Twelve templates cover the OWASP-aligned classes Sentinel detects: `command_injection`, `sql_injection`, `path_traversal`, `unsafe_deserialization`, `xss`, `ssrf`, `weak_crypto`, `hardcoded_secret`, `race_condition`, `open_redirect`, `insecure_temp`, `missing_auth`.
+
+**Safety boundaries (hard-coded, not configurable):**
+
+1. **Benign payloads only** — every template uses `echo VULN_CONFIRMED`-style markers. No network calls, no reverse shells, no destructive commands.
+2. **User-confirmation guard** — each generated `poc.py` refuses to run unless `LEANAI_POC_CONFIRM="I understand this demonstrates a vulnerability"` is set in the environment.
+3. **Import-refusal guard** — `poc.py` raises RuntimeError if imported. It must be run directly.
+4. **Project-root guard** — the engine refuses to generate PoCs whose target file resolves outside the scanned project root. Absolute paths and `../` traversals are both rejected.
+
+Each PoC compares a **vulnerable** implementation against a **fixed** implementation, triggers both with the same payload, and prints `VULN_CONFIRMED` if the vulnerable version exhibits the bug. This is a debugging aid, not a weapon. Do not use the templates against systems you do not own.
+
+**To run a generated PoC:**
+
+```bash
+cd ~/.leanai/exploits/EXPLOIT-2026-0001
+export LEANAI_POC_CONFIRM="I understand this demonstrates a vulnerability"
+python poc.py
+```
+
+**Honest scope:** ExploitForge is template-based, not LLM-generated. It fills pre-written PoC skeletons with the specifics of each finding (file, line, function, sink). It does not invent novel exploit chains. Target: ~35% of Mythos capability on this dimension — the remaining 65% is model-size-bound and requires hardware beyond consumer-grade.
+
+**What makes this better than Opus:** Opus would generate PoCs ad-hoc at request time, with hallucinated function signatures and no stable IDs. ExploitForge generates once, persists the PoC, fingerprints the finding so re-runs return the same EXPLOIT-ID, and structurally prevents both accidental execution and out-of-project targets.
+
+### SourceForensics: Deterministic Code Archaeology *(M4 — 105% Mythos lead)*
+
+`/forensics` answers detailed archaeology questions about any function in your codebase — when it was born, who wrote it, how often it changes, which functions it co-evolves with, what its stability score is. **No LLM involved.** Pure `git log -L` + Python AST. Sub-second per query. Never hallucinates a commit hash.
+
+```
+/forensics ProjectBrain.__init__              # full archaeology report
+/forensics --genesis my_function              # when/who created it
+/forensics --history my_function              # every commit that touched it
+/forensics --history 50 my_function           # up to 50 commits
+/forensics --coevolve my_function             # functions that change together
+/forensics --stability my_function            # churn score 0-100
+/forensics --authors my_function              # who has touched it, bus factor
+/forensics --file core/engine.py              # genesis + stability for every fn in a file
+/forensics --dead-code                        # project-wide dead-code sweep
+```
+
+What a full report shows:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  SourceForensics — ProjectBrain.__init__
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  File:               brain/project_brain.py
+  Current lines:      24
+  Current complexity: 3
+
+Genesis:
+  First appeared:  2026-04-09 10:58:31
+  First commit:    285ffc7  (Gowri Shankar)
+  Subject:         Phase 7a: Persistent Project Brain
+  Last changed:    2026-04-14 10:56:40  (Gowri Shankar)
+  Age:             4 days, 2 commit(s) touched it
+
+Stability:
+  Score:              41/100
+  Interpretation:     Active — meaningful change rate. Be cautious.
+  Age:                10 days
+  Total changes:      2
+  Churn rate:         6.00 changes / 30 days
+
+Authors:
+  ● Gowri Shankar                2 commit(s)  (100%)
+  Bus factor: 1
+
+History:
+  8cee8e5  2026-04-14  Gowri Shankar   +1  -1   LEANAI_HOME support
+  285ffc7  2026-04-09  Gowri Shankar   +458     Phase 7a: Persistent Project Brain
+```
+
+**Stability score formula:** 0–100 where 100 = rock-solid (no recent changes) and 0 = churn hotspot. Computed from changes per 30 days over the function's lifetime, with a long-quiet-period bonus.
+
+**Co-evolution detection:** Functions that appear in the same commits as the target at least twice. Ranked by Jaccard similarity over shared commits. Reveals implicit coupling that never shows up in a call graph — e.g. a parser that changes every time a lexer changes, even though they don't call each other.
+
+**Dead-code sweep:** Finds functions with zero inbound edges AND no textual name reference anywhere in the project. Conservative by design: misses more than it catches, because false positives get deleted. On a well-connected codebase it may return zero candidates — which is itself a useful signal. Excludes dunder methods, test files, framework-decorated functions, and known entry-point names.
+
+**What makes this better than Mythos:** Mythos runs a 100B+ parameter model to answer "when did this function first appear." LeanAI runs `git log -L 88,104:brain/project_brain.py` in 40ms. Deterministic tools beat model reasoning on deterministic questions — every time, no exceptions. Mythos can hallucinate a commit hash. `git log` cannot.
+
+**Lead magnitude: ~105%.** This is one of the five phases where LeanAI genuinely beats Mythos, not just matches it. Pure git archaeology with no LLM in the loop is a category Mythos simply does not optimize for.
+
 ### DFSG: Dynamic Few-Shot Grounding *(novel — no other tool does this)*
 
 Before generating code, LeanAI automatically finds the most similar function in YOUR codebase and injects it as a few-shot example. The model then generates code that matches YOUR naming conventions, error handling patterns, and docstring style.

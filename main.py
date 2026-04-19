@@ -166,6 +166,11 @@ from core.agac import AGACEngine
 from core.cascade import CascadeInference
 from core.sentinel import SentinelEngine, Severity, format_findings_report
 from core.chainbreaker import ChainBreakerEngine, format_chains_report
+# M4 — forensics helper (Windows-safe node-id filepath extractor)
+def _node_file_for_forensics(node_id: str) -> str:
+    if ':' not in node_id:
+        return node_id
+    return node_id.rsplit(':', 1)[0]
 from core.react import ReActReasoner
 from core.mixture_of_agents import MixtureOfAgents
 from core.streaming import StreamingGenerator, StreamConfig, print_streaming_header, print_streaming_footer
@@ -693,6 +698,8 @@ def main():
 ║  /diff            Explain last git commit             ║
 ║  /security <file> Scan code for vulnerabilities       ║
 ║  /chainbreak     Multi-stage attack chains (M2)        ║
+║  /exploit         PoC generation from findings (M3)    ║
+║  /forensics       Git+AST archaeology (M4)             ║
 ║                                                        ║
 ║ BUILD                                                  ║
 ║  /build <task>     Multi-step project builder           ║
@@ -1361,6 +1368,398 @@ def main():
                 sessions.add_exchange(query=user_input, response=summary, tier="chainbreak", confidence=85)
             except Exception as e:
                 print(f"  {C.DIM}ChainBreaker error: {e}{C.RESET}")
+
+        # ══════════════════════════════════════════════════════════
+        # M3 EXPLOITFORGE — PoC GENERATION
+        # ══════════════════════════════════════════════════════════
+        # Consumes Sentinel findings and ChainBreaker chains and produces
+        # runnable, benign-payload PoC demonstrations. Each PoC is
+        # guarded: refuses to run without LEANAI_POC_CONFIRM env var,
+        # refuses to be imported, targets restricted to project root.
+
+        elif cmd.startswith("/exploit"):
+            tokens = user_input.split()
+            from_id = None
+            generate_all = False
+            list_mode = False
+            view_id = None
+            templates_mode = False
+
+            i = 1
+            while i < len(tokens):
+                tok = tokens[i]
+                if tok == "--from" and i + 1 < len(tokens):
+                    from_id = tokens[i + 1]
+                    i += 1
+                elif tok == "--all":
+                    generate_all = True
+                elif tok in ("--list", "-l"):
+                    list_mode = True
+                elif tok == "--templates":
+                    templates_mode = True
+                elif tok == "--view" and i + 1 < len(tokens):
+                    view_id = tokens[i + 1]
+                    i += 1
+                i += 1
+
+            if brain is None:
+                print(f"  {C.DIM}ExploitForge needs the project brain. "
+                      f"Run /brain . first.{C.RESET}")
+                continue
+
+            try:
+                from core.exploitforge import (
+                    ExploitForgeEngine, format_exploits_report, TEMPLATES
+                )
+                forge = ExploitForgeEngine(
+                    project_root=brain.config.project_path
+                )
+
+                if templates_mode:
+                    print(f"  {C.BOLD}ExploitForge templates:{C.RESET}")
+                    for name in forge.list_templates():
+                        print(f"    • {name}")
+                    continue
+
+                if view_id:
+                    view = forge.view(view_id)
+                    if not view:
+                        print(f"  {C.DIM}No PoC with id {view_id}.{C.RESET}")
+                        continue
+                    print(f"\n━━━ {view_id} / README.md ━━━\n")
+                    print(view.get('README.md', '(missing)'))
+                    print(f"\n━━━ {view_id} / poc.py (first 40 lines) ━━━\n")
+                    lines = view.get('poc.py', '').splitlines()
+                    for ln in lines[:40]:
+                        print(f"  {ln}")
+                    if len(lines) > 40:
+                        print(f"  {C.DIM}... ({len(lines) - 40} more lines; "
+                              f"full file at {forge.exploit_dir}/{view_id}/poc.py){C.RESET}")
+                    continue
+
+                if list_mode or (not from_id and not generate_all):
+                    # Show what's available
+                    avail = forge.list_available()
+                    findings = avail['findings']
+                    chains = avail['chains']
+
+                    print(f"\n  {C.BOLD}ExploitForge — available sources{C.RESET}")
+                    print(f"  {C.DIM}Sentinel findings: {len(findings)}  "
+                          f"ChainBreaker chains: {len(chains)}{C.RESET}\n")
+
+                    # Group findings by class and show count per template-supported class
+                    by_class = {}
+                    for f in findings:
+                        vc = f.get('vuln_class', 'unknown')
+                        by_class.setdefault(vc, []).append(f)
+
+                    print(f"  {C.BOLD}Sentinel findings (by class):{C.RESET}")
+                    if not by_class:
+                        print(f"    {C.DIM}(none — run /sentinel first){C.RESET}")
+                    else:
+                        for vc in sorted(by_class):
+                            supported = "✓" if vc in TEMPLATES else "✗"
+                            ids = ', '.join(f.get('vuln_id', '?') for f in by_class[vc][:5])
+                            more = f" +{len(by_class[vc]) - 5}" if len(by_class[vc]) > 5 else ""
+                            print(f"    [{supported}] {vc:25} {len(by_class[vc])} "
+                                  f"({ids}{more})")
+
+                    if chains:
+                        print(f"\n  {C.BOLD}ChainBreaker chains:{C.RESET}")
+                        for c in chains[:10]:
+                            print(f"    {c.get('chain_id', '?')}  "
+                                  f"{c.get('capability', '?')}  "
+                                  f"{c.get('severity', '?')}")
+
+                    print(f"\n  {C.DIM}Generate a PoC:{C.RESET}")
+                    print(f"  {C.DIM}  /exploit --from VULN-2026-0001{C.RESET}")
+                    print(f"  {C.DIM}  /exploit --from CHAIN-2026-0001{C.RESET}")
+                    print(f"  {C.DIM}  /exploit --all{C.RESET}")
+                    print(f"  {C.DIM}  /exploit --templates{C.RESET}")
+                    continue
+
+                # Confirmation for --all (can generate many files)
+                if generate_all:
+                    avail = forge.list_available()
+                    total = len(avail['findings']) + len(avail['chains'])
+                    if total > 10:
+                        print(f"  {C.DIM}About to generate up to {total} PoC(s). "
+                              f"Each creates a directory in ~/.leanai/exploits/.{C.RESET}")
+                        ans = safe_input(f"  {C.BOLD}Proceed? [y/N] {C.RESET}")
+                        if ans.strip().lower() not in ('y', 'yes'):
+                            print(f"  {C.DIM}Cancelled.{C.RESET}")
+                            continue
+
+                print(f"  {C.DIM}ExploitForge: generating PoC(s)..."
+                      f"{C.RESET}", flush=True)
+                results, stats = forge.generate(
+                    from_id=from_id,
+                    generate_all=generate_all,
+                    verbose=True,
+                )
+                print(format_exploits_report(results, stats, color=True))
+
+                if results:
+                    print(f"  {C.BOLD}Next steps:{C.RESET}")
+                    print(f"    {C.DIM}1. Read the README.md in each exploit dir{C.RESET}")
+                    print(f"    {C.DIM}2. Review poc.py before running{C.RESET}")
+                    print(f"    {C.DIM}3. Set LEANAI_POC_CONFIRM, then run "
+                          f"python poc.py{C.RESET}")
+
+                summary = f"ExploitForge: {len(results)} PoC(s) generated"
+                sessions.add_exchange(
+                    query=user_input, response=summary,
+                    tier="exploit", confidence=85,
+                )
+            except Exception as e:
+                import traceback
+                print(f"  {C.DIM}ExploitForge error: {e}{C.RESET}")
+                traceback.print_exc()
+
+        # ══════════════════════════════════════════════════════════
+        # M4 SOURCEFORENSICS — DETERMINISTIC CODE ARCHAEOLOGY
+        # ══════════════════════════════════════════════════════════
+        # Pure AST + git log -L. No LLM involved. Sub-second per query.
+        # Answers: when was this function born, who wrote it, what
+        # functions co-evolve with it, stability score, author map,
+        # dead-code sweep.
+
+        elif cmd.startswith("/forensics") or cmd.startswith("/archaeology"):
+            tokens = user_input.split()
+
+            # Parse args
+            target = None
+            subcommand = None        # None = full report
+            history_limit = 20
+            coevolve_top_n = 10
+            file_path = None
+            json_mode = False
+
+            i = 1
+            while i < len(tokens):
+                tok = tokens[i]
+                if tok == "--genesis":
+                    subcommand = "genesis"
+                elif tok == "--history":
+                    subcommand = "history"
+                    # optional limit
+                    if i + 1 < len(tokens):
+                        try:
+                            history_limit = max(1, min(200, int(tokens[i + 1])))
+                            i += 1
+                        except ValueError:
+                            pass
+                elif tok in ("--coevolve", "--co-evolve"):
+                    subcommand = "coevolve"
+                    if i + 1 < len(tokens):
+                        try:
+                            coevolve_top_n = max(1, min(50, int(tokens[i + 1])))
+                            i += 1
+                        except ValueError:
+                            pass
+                elif tok == "--stability":
+                    subcommand = "stability"
+                elif tok == "--authors":
+                    subcommand = "authors"
+                elif tok == "--dead-code":
+                    subcommand = "dead_code"
+                elif tok == "--file" and i + 1 < len(tokens):
+                    subcommand = "file"
+                    file_path = tokens[i + 1]
+                    i += 1
+                elif tok == "--json":
+                    json_mode = True
+                elif not tok.startswith("--") and target is None:
+                    target = tok
+                i += 1
+
+            if brain is None:
+                print(f"  {C.DIM}SourceForensics needs the project brain. "
+                      f"Run /brain . first.{C.RESET}")
+                continue
+
+            try:
+                from core.forensics import (
+                    ForensicsEngine, format_full_report, format_genesis,
+                    format_history, format_coevolution, format_stability,
+                    format_authors, format_dead_code,
+                )
+                engine = ForensicsEngine(brain)
+
+                if not engine.git_available():
+                    print(f"  {C.DIM}SourceForensics: no git repo detected at "
+                          f"{brain.config.project_path}. Genesis/history/"
+                          f"author features require a git history.{C.RESET}")
+                    # Dead-code sweep works without git, so we still allow that
+                    if subcommand != "dead_code":
+                        continue
+
+                # ── Dead-code sweep ──
+                if subcommand == "dead_code":
+                    print(f"  {C.DIM}SourceForensics: scanning for dead code..."
+                          f"{C.RESET}", flush=True)
+                    import time as _t
+                    t0 = _t.time()
+                    entries = engine.dead_code()
+                    if json_mode:
+                        print(json.dumps([e.to_dict() for e in entries], indent=2))
+                    else:
+                        print(format_dead_code(entries, color=True))
+                        print(f"  {C.DIM}Sweep time: {_t.time()-t0:.2f}s{C.RESET}")
+                    sessions.add_exchange(
+                        query=user_input,
+                        response=f"Forensics dead-code: {len(entries)} candidate(s)",
+                        tier="forensics", confidence=90,
+                    )
+                    continue
+
+                # ── File-level overview ──
+                if subcommand == "file":
+                    if not file_path:
+                        print(f"  {C.DIM}Usage: /forensics --file <path>{C.RESET}")
+                        continue
+                    # Find every function in this file and show genesis + stability
+                    file_norm = file_path.replace('\\', '/')
+                    funcs = []
+                    for node_id, node in brain.graph.nodes.items():
+                        if node.node_type != 'function':
+                            continue
+                        nf = _node_file_for_forensics(node_id).replace('\\', '/')
+                        if nf.endswith('/' + file_norm) or nf.endswith(file_norm):
+                            funcs.append((node_id, node))
+                    if not funcs:
+                        print(f"  {C.DIM}No functions found in {file_path}{C.RESET}")
+                        continue
+
+                    print(f"\n  {C.BOLD}Forensics — {file_path}{C.RESET}")
+                    print(f"  {C.DIM}{len(funcs)} function(s) found{C.RESET}\n")
+                    for node_id, node in funcs[:30]:
+                        qname = node_id.rsplit(':', 1)[1]
+                        rel = engine._rel_path(_node_file_for_forensics(node_id))
+                        g = engine.genesis(rel, qname)
+                        s = engine.stability(rel, qname)
+                        if g and g.first_commit:
+                            born = g.first_commit.date[:10]
+                            author = g.original_author or '?'
+                        else:
+                            born = 'unknown'; author = '-'
+                        score = s.score if s else '-'
+                        print(f"  {C.BOLD}{qname:55s}{C.RESET}  "
+                              f"{C.DIM}born {born} by {author:18s}  "
+                              f"stability {score}/100{C.RESET}")
+                    if len(funcs) > 30:
+                        print(f"  {C.DIM}... +{len(funcs)-30} more{C.RESET}")
+                    continue
+
+                # ── All other subcommands need a target function ──
+                if not target:
+                    print(f"  {C.DIM}Usage:{C.RESET}")
+                    print(f"  {C.DIM}  /forensics <function>              "
+                          f"full report{C.RESET}")
+                    print(f"  {C.DIM}  /forensics --genesis <function>    "
+                          f"when/who created it{C.RESET}")
+                    print(f"  {C.DIM}  /forensics --history [N] <fn>      "
+                          f"commit-by-commit history{C.RESET}")
+                    print(f"  {C.DIM}  /forensics --coevolve [N] <fn>     "
+                          f"functions that change together{C.RESET}")
+                    print(f"  {C.DIM}  /forensics --stability <fn>        "
+                          f"stability score 0-100{C.RESET}")
+                    print(f"  {C.DIM}  /forensics --authors <fn>          "
+                          f"who has touched it{C.RESET}")
+                    print(f"  {C.DIM}  /forensics --file <path>           "
+                          f"all functions in a file{C.RESET}")
+                    print(f"  {C.DIM}  /forensics --dead-code             "
+                          f"project-wide sweep{C.RESET}")
+                    continue
+
+                resolved = engine.resolve_function(target)
+                if not resolved:
+                    matches = engine.list_matches(target)
+                    if matches:
+                        print(f"  {C.DIM}No unique match for '{target}'. "
+                              f"{len(matches)} candidate(s):{C.RESET}")
+                        for m in matches[:10]:
+                            print(f"    {m}")
+                        print(f"  {C.DIM}Try /forensics <file.py:qname>{C.RESET}")
+                    else:
+                        print(f"  {C.DIM}No function '{target}' found in the "
+                              f"project. Has /brain . been run?{C.RESET}")
+                    continue
+
+                filepath, qname, ls, le = resolved
+
+                if subcommand == "genesis":
+                    g = engine.genesis(filepath, qname)
+                    if json_mode:
+                        print(json.dumps(g.to_dict() if g else {}, indent=2))
+                    else:
+                        print(f"\n  {C.BOLD}{qname}{C.RESET}  "
+                              f"{C.DIM}({filepath}:{ls}){C.RESET}\n")
+                        if g:
+                            print(format_genesis(g, color=True))
+
+                elif subcommand == "history":
+                    hist = engine.history(filepath, qname, limit=history_limit)
+                    if json_mode:
+                        print(json.dumps([h.to_dict() for h in hist], indent=2))
+                    else:
+                        print(f"\n  {C.BOLD}{qname}{C.RESET}  "
+                              f"{C.DIM}({filepath}:{ls}){C.RESET}\n")
+                        print(format_history(hist, color=True))
+
+                elif subcommand == "coevolve":
+                    coevo = engine.co_evolution(filepath, qname, top_n=coevolve_top_n)
+                    if json_mode:
+                        print(json.dumps([c.to_dict() for c in coevo], indent=2))
+                    else:
+                        print(f"\n  {C.BOLD}{qname}{C.RESET}  "
+                              f"{C.DIM}({filepath}:{ls}){C.RESET}\n")
+                        print(format_coevolution(coevo, color=True))
+
+                elif subcommand == "stability":
+                    s = engine.stability(filepath, qname)
+                    if json_mode:
+                        print(json.dumps(s.to_dict() if s else {}, indent=2))
+                    else:
+                        print(f"\n  {C.BOLD}{qname}{C.RESET}  "
+                              f"{C.DIM}({filepath}:{ls}){C.RESET}\n")
+                        if s:
+                            print(format_stability(s, color=True))
+
+                elif subcommand == "authors":
+                    a = engine.authors(filepath, qname)
+                    if json_mode:
+                        print(json.dumps(a.to_dict() if a else {}, indent=2))
+                    else:
+                        print(f"\n  {C.BOLD}{qname}{C.RESET}  "
+                              f"{C.DIM}({filepath}:{ls}){C.RESET}\n")
+                        if a:
+                            print(format_authors(a, color=True))
+
+                else:
+                    # Full report (default)
+                    print(f"  {C.DIM}SourceForensics: generating full report..."
+                          f"{C.RESET}", flush=True)
+                    report = engine.full_report(
+                        filepath, qname,
+                        history_limit=history_limit,
+                        coevolve_top_n=coevolve_top_n,
+                    )
+                    if json_mode:
+                        print(json.dumps(report.to_dict(), indent=2))
+                    else:
+                        print(format_full_report(report, color=True))
+
+                summary = f"Forensics: {qname} ({subcommand or 'full'})"
+                sessions.add_exchange(
+                    query=user_input, response=summary,
+                    tier="forensics", confidence=90,
+                )
+
+            except Exception as e:
+                import traceback
+                print(f"  {C.DIM}SourceForensics error: {e}{C.RESET}")
+                traceback.print_exc()
 
         # ══════════════════════════════════════════════════════════
         # INDEX & ASK
