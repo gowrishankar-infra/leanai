@@ -502,7 +502,7 @@ def main():
     current_session = sessions.new_session(project_path=os.path.abspath("."))
 
     # ── Smart Context (after sessions is created) ─────────────────
-    smart_ctx = SmartContext(brain=None, git_intel=git_intel, session_store=sessions, hdc=hdc)
+    smart_ctx = SmartContext(brain=None, git_intel=git_intel, session_store=sessions, hdc=hdc, indexer=indexer)
 
     # ── Autocomplete ──────────────────────────────────────────────
     completer = AutoCompleter(brain=None)
@@ -822,7 +822,7 @@ def main():
             result = brain.scan()
             editor = MultiFileEditor(path)  # update editor too
             git_intel = GitIntel(path)  # update git too
-            smart_ctx = SmartContext(brain=brain, git_intel=git_intel, session_store=sessions, hdc=hdc)
+            smart_ctx = SmartContext(brain=brain, git_intel=git_intel, session_store=sessions, hdc=hdc, indexer=indexer)
             completer.update_brain(brain)  # update autocomplete index
             code_verifier.update_brain(brain)  # update fact-checker
             agac.update_brain(brain)  # update auto-corrector
@@ -833,6 +833,59 @@ def main():
                 react.register_tool("git", lambda q: git_intel.recent_activity(days=7), "Check git history")
             print(f"[Brain] Scanned {result['files_found']} files in {result['scan_time_ms']}ms")
             print(brain.project_summary())
+
+            # M6 — auto-index for semantic retrieval. If the indexer has no
+            # content, trigger an index_project run so /ask and chat queries
+            # get semantic code retrieval for free. Silent on failure.
+            # Wire the brain INTO the indexer first — that enables AST-
+            # grounded chunking (M6 quality lead). Also wire git_intel
+            # for the "recently modified" rerank boost.
+            try:
+                if indexer is not None:
+                    indexer.set_brain(brain)
+                    if git_intel is not None and hasattr(indexer, 'set_git_intel'):
+                        indexer.set_git_intel(git_intel)
+                # Fire auto-index when either:
+                #   (a) index is empty (first run), or
+                #   (b) index is stale — stored with wrong embedder dims
+                #       OR built with old regex chunker, not AST chunker.
+                # set_brain() above triggers the stale re-check now that
+                # _brain is wired, so _embeddings_are_stale reflects the
+                # AST-signature check too.
+                needs_index = False
+                reason = ""
+                if indexer is not None:
+                    if indexer.count() == 0:
+                        needs_index = True
+                        reason = "empty index"
+                    elif getattr(indexer, '_embeddings_are_stale', False):
+                        needs_index = True
+                        reason = "stale index — upgrading to AST-grounded chunks"
+                if needs_index:
+                    print(f"  {C.DIM}[M6] Auto-indexing for semantic retrieval "
+                          f"({reason}, AST-grounded chunking active)...{C.RESET}", flush=True)
+                    idx_start = time.time()
+                    idx_stats = indexer.index_project(path)
+                    idx_elapsed = time.time() - idx_start
+                    # IndexStats is a dataclass — read attributes directly.
+                    # Also support dict for future-compat.
+                    if hasattr(idx_stats, 'indexed_files'):
+                        files_indexed = idx_stats.indexed_files
+                        chunks = idx_stats.total_chunks
+                    elif isinstance(idx_stats, dict):
+                        files_indexed = idx_stats.get('indexed_files',
+                                       idx_stats.get('files_indexed', 0))
+                        chunks = idx_stats.get('total_chunks',
+                                 idx_stats.get('chunks_created', 0))
+                    else:
+                        files_indexed = 0
+                        chunks = indexer.count()
+                    print(f"  {C.DIM}[M6] Indexed {files_indexed} files into "
+                          f"{chunks} semantic chunks in {idx_elapsed:.1f}s "
+                          f"— /ask is ready{C.RESET}")
+            except Exception as e:
+                # Never break /brain because indexing failed
+                print(f"  {C.DIM}[M6] (auto-index skipped: {e}){C.RESET}")
 
         elif cmd == "/onboard":
             if not brain:
@@ -1781,19 +1834,125 @@ def main():
             print(f"Indexed {stats.get('files_indexed', 0)} files, {stats.get('chunks_created', 0)} chunks in {elapsed:.1f}s")
 
         elif cmd.startswith("/ask"):
-            query = user_input[4:].strip()
+            # M6 — upgraded /ask. Default: retrieval-augmented answer with
+            # citations. Use --raw for the pre-M6 behavior (just chunk list).
+            raw_body = user_input[4:].strip()
+            raw_mode = False
+            if raw_body.startswith("--raw"):
+                raw_mode = True
+                raw_body = raw_body[5:].strip()
+            query = raw_body
             if not query:
-                print("Usage: /ask <question>")
+                print("Usage: /ask [--raw] <question>")
                 continue
-            results = indexer.search(query, top_k=5)
-            if not results:
-                print("No results. Run /index <path> first.")
+
+            # Retrieve. indexer.search returns list of dicts with 'content',
+            # 'relative_path', 'name', 'start_line', 'end_line', 'relevance'.
+            try:
+                hits = indexer.search(query, top_k=5) or []
+            except Exception as e:
+                print(f"  {C.DIM}[M6] /ask retrieval failed: {e}{C.RESET}")
+                hits = []
+
+            if not hits:
+                print("No results. Run /brain . first (auto-indexes) or /index <path>.")
                 continue
-            for r in results:
-                score = r.get("score", 0)
-                filepath = r.get("filepath", "?")
-                chunk = r.get("chunk", "")[:150].replace("\n", " ")
-                print(f"  [{score:.0%}] {filepath}: {chunk}")
+
+            # --raw mode: show chunks as one-liners (preserves pre-M6 UX)
+            if raw_mode:
+                for r in hits:
+                    rel = r.get("relative_path", r.get("file_path", "?"))
+                    score = r.get("relevance", 0.0)
+                    name = r.get("name", "") or r.get("chunk_type", "")
+                    start = r.get("start_line", 0)
+                    end = r.get("end_line", 0)
+                    snippet = (r.get("content", "") or "")[:150].replace("\n", " ")
+                    print(f"  [{score:.0%}] {rel}:{start}-{end} ({name}): {snippet}")
+                continue
+
+            # Grounded-answer mode. Build a context-rich prompt and run the
+            # currently-loaded model. If no model loaded, fall back to raw.
+            model_ready = False
+            try:
+                model_ready = bool(engine and getattr(engine, '_model_loaded', False))
+            except Exception:
+                model_ready = False
+
+            if not model_ready:
+                # No model loaded yet — show raw chunks and tell the user
+                # they can re-run with a loaded model for a grounded answer.
+                print(f"  {C.DIM}[M6] No model loaded — showing raw chunks. "
+                      f"Ask a regular question first to load the model, "
+                      f"or use /ask --raw to suppress this hint.{C.RESET}")
+                for r in hits:
+                    rel = r.get("relative_path", r.get("file_path", "?"))
+                    score = r.get("relevance", 0.0)
+                    name = r.get("name", "") or r.get("chunk_type", "")
+                    start = r.get("start_line", 0)
+                    end = r.get("end_line", 0)
+                    snippet = (r.get("content", "") or "")[:200].replace("\n", " ")
+                    print(f"  [{score:.0%}] {rel}:{start}-{end} ({name}): {snippet}")
+                continue
+
+            # Build a grounded prompt with citations
+            context_blocks = []
+            for i, r in enumerate(hits, 1):
+                rel = r.get("relative_path", r.get("file_path", "?"))
+                name = r.get("name", "") or r.get("chunk_type", "chunk")
+                start = r.get("start_line", 0)
+                end = r.get("end_line", 0)
+                content = r.get("content", "") or ""
+                if len(content) > 1500:
+                    content = content[:1500] + "\n..."
+                context_blocks.append(
+                    f"[{i}] {rel}:{start}-{end} ({name})\n```python\n{content}\n```"
+                )
+            context_str = "\n\n".join(context_blocks)
+
+            system_prompt = (
+                "You are LeanAI answering a question about the user's project. "
+                "You are given the top semantically-relevant code chunks from "
+                "their project as context. Answer the question using ONLY the "
+                "provided context. When you reference code, cite it with "
+                "the bracket number and line range, like [1] or [3:442-488]. "
+                "If the context doesn't contain the answer, say so plainly "
+                "rather than guessing."
+            )
+            user_prompt = f"{context_str}\n\nQuestion: {query}"
+
+            print(f"  {C.DIM}[M6] Retrieving {len(hits)} relevant chunks, "
+                  f"answering with {engine.model_info.get('filename', 'model') if hasattr(engine, 'model_info') else 'local model'}...{C.RESET}", flush=True)
+            try:
+                start_t = time.time()
+                answer = engine.generate(
+                    query=user_prompt,
+                    system_prompt=system_prompt,
+                )
+                elapsed_t = time.time() - start_t
+                print()
+                print(answer)
+                print()
+                print(f"  {C.DIM}Sources consulted:{C.RESET}")
+                for i, r in enumerate(hits, 1):
+                    rel = r.get("relative_path", r.get("file_path", "?"))
+                    name = r.get("name", "") or r.get("chunk_type", "chunk")
+                    start = r.get("start_line", 0)
+                    end = r.get("end_line", 0)
+                    score = r.get("relevance", 0.0)
+                    print(f"    {C.DIM}[{i}] {rel}:{start}-{end} ({name}, relevance {score:.0%}){C.RESET}")
+                print(f"  {C.DIM}Answer time: {elapsed_t:.1f}s{C.RESET}")
+                sessions.add_exchange(
+                    query=user_input, response=answer,
+                    tier="ask_grounded", confidence=80,
+                )
+            except Exception as e:
+                print(f"  {C.DIM}[M6] Grounded answer failed ({e}) — "
+                      f"falling back to raw chunks.{C.RESET}")
+                for r in hits:
+                    rel = r.get("relative_path", r.get("file_path", "?"))
+                    score = r.get("relevance", 0.0)
+                    snippet = (r.get("content", "") or "")[:150].replace("\n", " ")
+                    print(f"  [{score:.0%}] {rel}: {snippet}")
 
         # ══════════════════════════════════════════════════════════
         # TRAINING

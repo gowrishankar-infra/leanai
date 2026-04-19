@@ -97,7 +97,26 @@ class ProjectIndexer:
         self,
         storage_path: str = "~/.leanai/project_index",
         embedder=None,
+        auto_load_embedder: bool = True,
+        brain=None,
     ):
+        """
+        storage_path:        where ChromaDB persists its collection
+        embedder:            optional pre-loaded SentenceTransformer-like
+                             object (must expose `.encode(str) -> vector`).
+                             If provided, takes priority over auto_load.
+        auto_load_embedder:  if True AND no embedder is provided, load
+                             all-MiniLM-L6-v2 on construction. Without
+                             an embedder the indexer silently degrades
+                             to keyword-search with flat relevance
+                             scores — a confusing UX. Default on.
+        brain:               optional ProjectBrain instance. When provided,
+                             Python chunking uses the AST graph (function
+                             boundaries, docstrings, call relationships)
+                             instead of regex splitting. Substantially
+                             improves semantic retrieval quality.
+                             Can be set later via set_brain().
+        """
         self.storage_path = Path(storage_path).expanduser()
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self._embedder   = embedder
@@ -106,8 +125,141 @@ class ProjectIndexer:
         self._stats_file = self.storage_path / "stats.json"
         self._file_hashes: dict = {}
         self._hashes_file = self.storage_path / "file_hashes.json"
+        self._brain      = brain
         self._load_hashes()
         self._init_collection()
+        # M6 fix — auto-load the same embedder the memory store uses,
+        # so that search() actually runs semantic retrieval (not the
+        # flat-0.5 keyword fallback). Load AFTER collection init so we
+        # know whether we'll need it.
+        if self._embedder is None and auto_load_embedder:
+            self._auto_load_embedder()
+        # Detect legacy index built without a real embedder. If the
+        # existing collection was populated with simple (TF-IDF) vectors
+        # but we now have a real embedder, the vectors are incompatible
+        # and search results will be noise. Flag this for rebuild.
+        self._embeddings_are_stale = self._detect_stale_embeddings()
+
+    def set_brain(self, brain):
+        """Wire a ProjectBrain into the indexer AFTER construction.
+        Enables AST-grounded chunking for Python files on the next
+        index_project() call. If brain changes structure (e.g. a
+        project re-scan happens), call this again.
+        """
+        self._brain = brain
+        # Invalidate the hybrid retriever so it rebuilds with the new brain
+        self._hybrid_retriever = None
+        # Re-detect staleness now that we have the brain — the AST-
+        # signature check needs the brain to know we WANT AST chunks.
+        # If an old regex-chunked index exists, this flips
+        # _embeddings_are_stale to True so the next index_project()
+        # triggers a clean rebuild.
+        self._embeddings_are_stale = self._detect_stale_embeddings()
+
+    def set_git_intel(self, git_intel):
+        """Wire GitIntel for rerank 'recently modified' boost."""
+        self._git_intel = git_intel
+        self._hybrid_retriever = None
+
+    def _get_hybrid(self):
+        """Lazy-build HybridRetriever on first use. Rebuilds when brain
+        changes (e.g. /brain . re-scan).
+        """
+        if getattr(self, '_hybrid_retriever', None) is not None:
+            return self._hybrid_retriever
+        if getattr(self, '_brain', None) is None:
+            return None
+        try:
+            from core.retrieval import HybridRetriever
+            self._hybrid_retriever = HybridRetriever(
+                indexer=self,
+                brain=self._brain,
+                git_intel=getattr(self, '_git_intel', None),
+            )
+            return self._hybrid_retriever
+        except Exception as e:
+            print(f"[Indexer] HybridRetriever unavailable ({e}) — "
+                  f"using semantic-only search")
+            self._hybrid_retriever = None
+            return None
+
+    def _auto_load_embedder(self):
+        """Try to load sentence-transformers all-MiniLM-L6-v2.
+        Mirrors vector_memory._load_embedder. Shares weights via HF cache
+        so no second download if memory already loaded it.
+        """
+        try:
+            from sentence_transformers import SentenceTransformer
+            self._embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            print(f"[Indexer] Semantic embedder loaded (all-MiniLM-L6-v2)")
+        except Exception as e:
+            print(f"[Indexer] Semantic embedder unavailable ({e}) — "
+                  f"search will use keyword fallback with flat scores")
+            self._embedder = None
+
+    def _detect_stale_embeddings(self) -> bool:
+        """Peek at one stored embedding/document to see if the index is
+        stale for any of these reasons:
+
+        1. Stored embedding dimensions don't match what the current
+           embedder produces (legacy TF-IDF fallback from pre-M6).
+        2. A Python chunk exists but its content DOESN'T contain the
+           AST-chunker signature '# LeanAI chunk ·' — meaning the index
+           was built with the old regex chunker and needs a rebuild to
+           unlock the M6 AST-grounded retrieval quality.
+
+        Returns True if stale. False if fresh or unknown.
+        """
+        if not self._collection:
+            return False
+        try:
+            count = self._collection.count()
+        except Exception:
+            return False
+        if count == 0:
+            return False
+
+        # Check 1 — embedding dimension mismatch
+        if self._embedder:
+            try:
+                sample = self._collection.get(include=["embeddings"], limit=1)
+                embs = sample.get("embeddings")
+                # ChromaDB returns embeddings as numpy arrays; use len()
+                # + None-check with explicit 'is None' so we don't trip
+                # numpy's ambiguous-truth-value error.
+                if embs is not None and len(embs) > 0 and embs[0] is not None:
+                    stored_dim = len(embs[0])
+                    probe_vec = self._embedder.encode("dimension probe").tolist()
+                    if stored_dim != len(probe_vec):
+                        print(f"[Indexer] Stale: embedding dim mismatch "
+                              f"(stored={stored_dim}, current={len(probe_vec)})")
+                        return True
+            except Exception as e:
+                # Note the error but continue — we can still do check 2
+                pass
+
+        # Check 2 — AST chunker signature absent from Python chunks
+        # If any Python chunk lacks the '# LeanAI chunk ·' header,
+        # it was built with the old regex chunker. The AST chunker
+        # prefixes EVERY chunk with that signature.
+        if self._brain is not None:
+            try:
+                py_sample = self._collection.get(
+                    where={"language": "python"},
+                    include=["documents"], limit=3)
+                py_docs = py_sample.get("documents") or []
+                if py_docs:
+                    has_ast_signature = any(
+                        '# LeanAI chunk ·' in d for d in py_docs
+                    )
+                    if not has_ast_signature:
+                        print("[Indexer] Stale: Python chunks lack AST-chunker "
+                              "signature — rebuilding for M6 quality")
+                        return True
+            except Exception:
+                pass
+
+        return False
 
     # ══════════════════════════════════════════════════
     # Public API
@@ -125,6 +277,26 @@ class ProjectIndexer:
         root = Path(project_root).resolve()
         if not root.exists():
             raise ValueError(f"Project root does not exist: {root}")
+
+        # M6 fix — if we loaded a real embedder but the existing collection
+        # was built with the legacy TF-IDF fallback, nuke it and start
+        # fresh. Without this, new embeddings can't sit alongside old
+        # incompatible-dim vectors and search returns garbage.
+        if self._embeddings_are_stale:
+            print(f"[Indexer] Stale index detected (built without semantic "
+                  f"embedder) — rebuilding for accurate search...")
+            try:
+                self._chroma.delete_collection(self.COLLECTION_NAME)
+                self._collection = self._chroma.get_or_create_collection(
+                    name=self.COLLECTION_NAME,
+                    metadata={"hnsw:space": "cosine"},
+                )
+                self._file_hashes = {}
+                self._save_hashes()
+                self._embeddings_are_stale = False
+                force = True  # must re-chunk everything
+            except Exception as e:
+                print(f"[Indexer] Rebuild failed ({e}) — keeping legacy index")
 
         print(f"[Indexer] Scanning: {root}")
         start_time = time.time()
@@ -180,13 +352,59 @@ class ProjectIndexer:
 
     def search(self, query: str, top_k: int = 5, language: str = None) -> list:
         """
-        Semantic search across the indexed codebase.
+        Retrieve chunks matching a query.
 
-        Returns list of CodeChunk-like dicts, sorted by relevance.
+        Routing:
+          - If a ProjectBrain is wired AND the HybridRetriever loads
+            successfully → route through hybrid retrieval (semantic +
+            BM25 + graph + RRF fusion + rerank). Best quality.
+          - Otherwise → fall back to semantic-only search via
+            _semantic_search(). Same behavior as before M6.
+          - If neither embedder nor collection → keyword fallback with
+            flat 0.5 relevance. Unchanged legacy behavior.
+
+        Returns list of dicts with keys: content, relative_path, name,
+        chunk_type, start_line, end_line, relevance.
         """
+        # M6 fix — one-time diagnostic so it's obvious what search mode
+        # is active. `_diag_logged` guards against spamming every call.
+        if not getattr(self, '_diag_logged', False):
+            self._diag_logged = True
+            if self._collection and self._embedder:
+                if getattr(self, '_brain', None) is not None:
+                    mode = "hybrid (semantic + BM25 + graph)"
+                else:
+                    mode = "semantic (embeddings only)"
+            else:
+                mode = "keyword fallback (flat 0.5 relevance)"
+            try:
+                chunk_count = self._collection.count() if self._collection else 0
+            except Exception:
+                chunk_count = 0
+            print(f"[Indexer] Search mode: {mode} · {chunk_count} chunks indexed")
+
         if not self._collection or not self._embedder:
             return self._keyword_search(query, top_k)
 
+        # Try hybrid retrieval first. If it fails or isn't available,
+        # fall through to semantic-only (legacy) search.
+        hybrid = self._get_hybrid()
+        if hybrid is not None:
+            try:
+                return hybrid.search_legacy(query, top_k=top_k)
+            except Exception as e:
+                # Never block search on hybrid failure
+                print(f"[Indexer] Hybrid retrieval failed ({e}) — "
+                      f"using semantic-only")
+
+        return self._semantic_search(query, top_k, language)
+
+    def _semantic_search(self, query: str, top_k: int = 5, language: str = None) -> list:
+        """Semantic-only search — the original indexer.search behavior,
+        preserved for fallback and as the primitive that HybridRetriever
+        calls internally (via its own indexer.search path to avoid
+        recursion, this method sits under the hybrid layer).
+        """
         try:
             count = self._collection.count()
             if count == 0:
@@ -372,7 +590,264 @@ class ProjectIndexer:
         return [c for c in chunks if len(c.content) >= MIN_CHUNK_CHARS]
 
     def _chunk_python(self, content: str, file_path: Path, rel_path: str, root: Path) -> list:
-        """Split Python file by function and class definitions."""
+        """Chunk a Python file. If a ProjectBrain is wired, use its AST
+        graph for qualified-name boundaries, docstring extraction, and
+        call relationships — substantially better semantic retrieval
+        than regex boundaries. Falls back to the regex chunker if no
+        brain is available or analysis is incomplete.
+        """
+        if self._brain is not None:
+            try:
+                ast_chunks = self._chunk_python_ast(content, file_path, rel_path, root)
+                # Only use AST chunks if we got a meaningful amount — a
+                # file with zero parseable functions (module-level code
+                # only) should fall back to the generic chunker.
+                if ast_chunks:
+                    return ast_chunks
+            except Exception as e:
+                # Any failure → safe fallback. Never block indexing.
+                pass
+        return self._chunk_python_regex(content, file_path, rel_path, root)
+
+    def _chunk_python_ast(self, content: str, file_path: Path, rel_path: str, root: Path) -> list:
+        """
+        AST-grounded Python chunking — the M6 quality lead.
+
+        Each chunk is a single function, method, class (header+body),
+        or module-level block. The chunk TEXT is enriched with:
+          - TYPE (function|method|class|module), CLASS, NAME, LINES, FILE
+          - DOCSTRING (parsed, cleaned)
+          - CALLS: qualified names of functions this one calls
+          - CALLED_BY: qualified names of functions that call this one
+          - SOURCE: the raw code
+
+        This structured header makes the embedding vector represent
+        "a function named X in class Y that does Z and is called by W"
+        — which matches natural-language queries ("how does caching
+        work") far better than the raw code alone.
+
+        Returns list of CodeChunk instances. Never returns empty; falls
+        back to the caller's regex path via exception if brain info
+        looks incomplete (e.g. file not yet analyzed).
+        """
+        analysis = self._brain._file_analyses.get(rel_path)
+        if not analysis or analysis.error:
+            # Brain doesn't know this file yet (new scan pending). Let
+            # the caller fall back to regex.
+            raise ValueError("brain has no analysis for this file")
+
+        lines = content.split("\n")
+        total_lines = len(lines)
+        chunks = []
+
+        # Build called_by index once for this file by scanning the brain's
+        # dependency graph. For each function in this file, find who
+        # calls it across the project.
+        called_by_index: dict = {}
+        try:
+            graph = self._brain.graph
+            # Build reverse adjacency (target -> list of source qnames)
+            for src_id, targets in graph._adjacency.items():
+                src_qname = src_id.rsplit(':', 1)[-1] if ':' in src_id else src_id
+                src_file = src_id.rsplit(':', 1)[0] if ':' in src_id else ''
+                for tgt_id in targets:
+                    if tgt_id.startswith('__'):
+                        continue
+                    # Only record cross-file callers — same-file calls are
+                    # already visible from the chunk itself.
+                    if src_file and src_file != str(file_path):
+                        tgt_qname = tgt_id.rsplit(':', 1)[-1] if ':' in tgt_id else tgt_id
+                        called_by_index.setdefault(tgt_qname, set()).add(src_qname)
+        except Exception:
+            called_by_index = {}
+
+        # Track which line ranges are covered by function/method chunks,
+        # so the remainder can be collected as module-level code.
+        covered_ranges = []
+
+        # ─── Functions & methods ───────────────────────────────────
+        for func in analysis.functions:
+            ls = max(0, func.line_start - 1)
+            le = min(total_lines, func.line_end)
+            if le <= ls:
+                continue
+            covered_ranges.append((ls, le))
+
+            source = "\n".join(lines[ls:le])
+            # Header facts for the embedder
+            kind = "method" if func.is_method else "function"
+            qname = func.qualified_name
+            doc = (func.docstring or "").strip()
+            if len(doc) > 300:
+                doc = doc[:300] + "..."
+
+            # Outgoing calls (qualified where possible)
+            calls_list = []
+            seen = set()
+            for c in func.calls[:12]:  # cap for header size
+                if c not in seen and c:
+                    seen.add(c)
+                    calls_list.append(c)
+            calls_str = ", ".join(calls_list) if calls_list else "(none)"
+
+            # Incoming callers (from graph index)
+            incoming = called_by_index.get(qname, set())
+            if not incoming and func.is_method:
+                # Try class-method lookup too
+                incoming = called_by_index.get(func.name, set())
+            callers_list = sorted(incoming)[:8]
+            callers_str = ", ".join(callers_list) if callers_list else "(none outside this file)"
+
+            header_lines = [
+                f"# LeanAI chunk · {kind} · {qname}",
+                f"# File: {rel_path} · Lines {func.line_start}-{func.line_end}",
+            ]
+            if func.class_name:
+                header_lines.append(f"# Class: {func.class_name}")
+            if doc:
+                header_lines.append(f"# Docstring: {doc}")
+            header_lines.append(f"# Calls: {calls_str}")
+            header_lines.append(f"# Called by: {callers_str}")
+            header_lines.append(f"# Complexity: {func.complexity}")
+            if func.decorators:
+                header_lines.append(f"# Decorators: {', '.join(func.decorators[:6])}")
+            header = "\n".join(header_lines)
+
+            chunk_content = header + "\n\n" + source
+            # Budget check: MiniLM truncates at ~256 tokens (~1000 chars).
+            # If the source is much larger, keep the header + first 800
+            # chars of the source so the semantic signal stays in-window.
+            if len(chunk_content) > 1600:
+                truncated_source = source[:1200] + "\n# ... [truncated for embedding]"
+                chunk_content = header + "\n\n" + truncated_source
+
+            chunks.append(CodeChunk(
+                id=self._make_id(rel_path, func.line_start, qname),
+                file_path=str(file_path),
+                relative_path=rel_path,
+                language="python",
+                chunk_type=kind,
+                name=qname,
+                content=chunk_content,
+                start_line=func.line_start,
+                end_line=func.line_end,
+                project_root=str(root),
+            ))
+
+        # ─── Classes (with method bodies NOT re-included) ──────────
+        # Represent each class with its header, docstring, bases, and
+        # method-list — gives semantic coverage for queries like
+        # "where is the SessionStore class defined".
+        for cls in analysis.classes:
+            ls = max(0, cls.line_start - 1)
+            le = min(total_lines, cls.line_end)
+            if le <= ls:
+                continue
+
+            # Class-header text: take the line range but ONLY the header
+            # + non-method code. We skip the method bodies because they
+            # already have their own chunks.
+            class_source_lines = lines[ls:min(ls + 30, le)]  # first ~30 lines
+            class_header_source = "\n".join(class_source_lines)
+
+            doc = (cls.docstring or "").strip()
+            if len(doc) > 300:
+                doc = doc[:300] + "..."
+            bases_str = ", ".join(cls.bases) if cls.bases else "(none)"
+            methods_str = ", ".join(cls.methods[:20]) if cls.methods else "(none)"
+
+            header_lines = [
+                f"# LeanAI chunk · class · {cls.name}",
+                f"# File: {rel_path} · Lines {cls.line_start}-{cls.line_end}",
+                f"# Bases: {bases_str}",
+                f"# Methods: {methods_str}",
+            ]
+            if doc:
+                header_lines.append(f"# Docstring: {doc}")
+            if cls.decorators:
+                header_lines.append(f"# Decorators: {', '.join(cls.decorators[:6])}")
+            header = "\n".join(header_lines)
+
+            chunks.append(CodeChunk(
+                id=self._make_id(rel_path, cls.line_start, cls.name + "__class"),
+                file_path=str(file_path),
+                relative_path=rel_path,
+                language="python",
+                chunk_type="class",
+                name=cls.name,
+                content=header + "\n\n" + class_header_source,
+                start_line=cls.line_start,
+                end_line=cls.line_end,
+                project_root=str(root),
+            ))
+
+        # ─── Module-level code ─────────────────────────────────────
+        # Imports + top-level constants + module docstring + anything
+        # between function definitions. Collect contiguous uncovered
+        # ranges and emit them as module chunks.
+        covered_ranges.sort()
+        uncovered_blocks = []
+        cur = 0
+        for (rs, re_) in covered_ranges:
+            if rs > cur:
+                uncovered_blocks.append((cur, rs))
+            cur = max(cur, re_)
+        if cur < total_lines:
+            uncovered_blocks.append((cur, total_lines))
+
+        for (bs, be) in uncovered_blocks:
+            # Strip pure-whitespace blocks
+            text = "\n".join(lines[bs:be]).strip()
+            if len(text) < MIN_CHUNK_CHARS:
+                continue
+
+            # Identify what this module chunk roughly contains
+            has_imports = any(l.strip().startswith(('import ', 'from '))
+                              for l in lines[bs:be])
+            has_const = any(re.match(r'^[A-Z_][A-Z0-9_]+\s*=', l)
+                            for l in lines[bs:be])
+            tags = []
+            if has_imports:
+                tags.append("imports")
+            if has_const:
+                tags.append("constants")
+            if not tags and bs == 0:
+                tags.append("module-docstring-or-header")
+            if not tags:
+                tags.append("module-level-code")
+            tag_str = " + ".join(tags)
+
+            header = (
+                f"# LeanAI chunk · module · {rel_path}\n"
+                f"# Lines {bs+1}-{be}\n"
+                f"# Contains: {tag_str}"
+            )
+            # Cap module chunks to avoid huge single chunks
+            if len(text) > 1200:
+                text_clipped = text[:1200] + "\n# ... [truncated]"
+            else:
+                text_clipped = text
+
+            chunks.append(CodeChunk(
+                id=self._make_id(rel_path, bs + 1, f"module_block_{bs}"),
+                file_path=str(file_path),
+                relative_path=rel_path,
+                language="python",
+                chunk_type="module",
+                name=f"{Path(rel_path).stem}:module",
+                content=header + "\n\n" + text_clipped,
+                start_line=bs + 1,
+                end_line=be,
+                project_root=str(root),
+            ))
+
+        return chunks
+
+    def _chunk_python_regex(self, content: str, file_path: Path, rel_path: str, root: Path) -> list:
+        """Legacy regex-boundary Python chunker. Used when no brain
+        is wired OR when AST chunking fails for some reason. Preserves
+        pre-M6 behavior exactly.
+        """
         chunks = []
         lines  = content.split("\n")
 

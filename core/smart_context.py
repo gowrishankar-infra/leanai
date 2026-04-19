@@ -34,12 +34,26 @@ class SmartContext:
         git_intel=None,
         session_store=None,
         hdc=None,
+        indexer=None,
         max_context_chars: int = 4000,
     ):
+        """
+        brain:              ProjectBrain for AST/dependency lookups (lexical)
+        git_intel:          GitIntel for recent-change context
+        session_store:      SessionStore for past-conversation context
+        hdc:                HDCMemory for cross-session pattern memory
+        indexer:            (M6) ProjectIndexer for semantic code retrieval.
+                            When provided, `_get_brain_context` uses semantic
+                            search first and falls back to lexical matching.
+                            Safe to leave as None — falls through to existing
+                            behavior.
+        max_context_chars:  hard cap on context size per query
+        """
         self.brain = brain
         self.git = git_intel
         self.session_store = session_store
         self.hdc = hdc
+        self.indexer = indexer
         self.max_context_chars = max_context_chars
 
     def build(self, query: str, include_brain: bool = True,
@@ -92,71 +106,174 @@ class SmartContext:
 
         return "\n\n".join(parts)
 
+    # M6 fix — hard context budget for brain-derived context. Was
+    # previously allowed to stack semantic (~2000 chars) + lexical
+    # (~3000 chars) = 5000+ chars, which on a 4096-token llama.cpp KV
+    # cache combined with conversation history + system prompt + query
+    # produced 'decode: failed to find a memory slot' errors and
+    # multi-minute generation times. Total cap now enforced.
+    _BRAIN_CTX_BUDGET = 2500  # characters, hard cap on _get_brain_context
+    _SEMANTIC_TOP_K   = 3     # was 4; tighter to stay within budget
+
     def _get_brain_context(self, query: str) -> str:
-        """Get relevant project structure context with actual code content."""
+        """Get relevant project structure context with actual code content.
+
+        M6 — Hybrid retrieval with a HARD CHARACTER BUDGET.
+          1. Semantic hits render first (highest signal). Top-K reduced
+             to 3 from 4 so they fit within budget.
+          2. Lexical matches render second, skipping files already
+             covered by semantic. Each contribution is budget-checked
+             before being appended.
+          3. Project summary is guaranteed to fit (80-200 chars) and is
+             appended last — even if every other block got trimmed.
+
+        The budget prevents the KV-cache overflow seen in testing when
+        conceptual queries were matching lots of lexical file+function
+        blocks on top of semantic chunks. Small loss on precision for
+        very rich queries; big gain on generation stability and speed.
+        """
         try:
-            ctx_parts = []
+            ctx_parts: List[str] = []
+            budget = self._BRAIN_CTX_BUDGET
             query_lower = query.lower()
 
-            # Find mentioned files and inject their actual description + content
-            matched_file = False
+            def _append(block: str) -> bool:
+                """Append if it fits in the remaining budget. Returns True
+                if appended, False if skipped. Chunks are ATOMIC — either
+                the whole block goes in or none of it does, to avoid
+                mid-chunk truncation that would confuse the model."""
+                nonlocal budget
+                if len(block) + 1 > budget:  # +1 for the newline join
+                    return False
+                ctx_parts.append(block)
+                budget -= len(block) + 1
+                return True
+
+            # ── PATH A: semantic retrieval (if indexer wired & populated) ──
+            semantic_hits: List[dict] = []
+            if self.indexer is not None:
+                try:
+                    if self.indexer.count() > 0:
+                        semantic_hits = self.indexer.search(
+                            query, top_k=self._SEMANTIC_TOP_K) or []
+                except Exception:
+                    semantic_hits = []
+
+            # Reserve ~200 chars for the project summary at the end so it
+            # always fits. Each semantic chunk capped at 900 chars so 3
+            # chunks max ~2700 — we'll budget-check each one.
+            PROJECT_SUMMARY_RESERVE = 220
+            working_budget_cap = self._BRAIN_CTX_BUDGET - PROJECT_SUMMARY_RESERVE
+
+            semantic_files: set = set()
+            for hit in semantic_hits:
+                chunk = hit.get('content', '') or ''
+                rel_path = hit.get('relative_path', hit.get('file_path', ''))
+                name = hit.get('name', '') or hit.get('chunk_type', 'chunk')
+                relevance = hit.get('relevance', 0.0)
+                start = hit.get('start_line', 0)
+                end = hit.get('end_line', 0)
+                if not chunk or not rel_path:
+                    continue
+                semantic_files.add(rel_path)
+                # Each chunk capped at 900 chars — lets 3 fit under budget
+                # with room for lexical contributions + summary.
+                snippet = chunk if len(chunk) <= 900 else chunk[:900] + '\n...'
+                block = (
+                    f"[Relevant code — {rel_path}:{start}-{end} "
+                    f"({name}, relevance {relevance:.0%})]\n"
+                    f"```\n{snippet}\n```"
+                )
+                # Leave room for summary
+                if budget - PROJECT_SUMMARY_RESERVE - len(block) < 0:
+                    # Try shorter form — just header + first 300 chars
+                    short_snippet = chunk[:300] + ('\n...' if len(chunk) > 300 else '')
+                    short_block = (
+                        f"[Relevant code — {rel_path}:{start}-{end} "
+                        f"({name}, relevance {relevance:.0%})]\n"
+                        f"```\n{short_snippet}\n```"
+                    )
+                    _append(short_block)
+                else:
+                    _append(block)
+                # Stop if we've used most of the working budget
+                if budget <= PROJECT_SUMMARY_RESERVE + 200:
+                    break
+
+            # ── PATH B: lexical filename match (existing behavior) ──
             matched_path = None
+            matched_file = False
             for rel_path in list(self.brain._file_analyses.keys())[:200]:
                 fname = os.path.basename(rel_path).lower().replace(".py", "")
-                # Match filename without extension in query
                 if fname in query_lower and len(fname) > 2:
-                    desc = self.brain.describe_file(rel_path)
-                    if desc and "not indexed" not in desc.lower():
-                        ctx_parts.append(f"[File: {rel_path}]\n{desc[:600]}")
+                    if rel_path in semantic_files:
+                        # Already covered by semantic — don't duplicate
                         matched_file = True
                         matched_path = rel_path
                         break
+                    desc = self.brain.describe_file(rel_path)
+                    if desc and "not indexed" not in desc.lower():
+                        desc_short = desc[:500]  # was 600 — trim 100 for budget
+                        _append(f"[File: {rel_path}]\n{desc_short}")
+                    matched_file = True
+                    matched_path = rel_path
+                    break
 
-            # If no specific file matched, try partial matches
             if not matched_file:
                 for rel_path in list(self.brain._file_analyses.keys())[:200]:
                     fname = os.path.basename(rel_path).lower()
-                    # Check if any word in the query matches a filename
                     for word in query_lower.split():
                         if len(word) > 3 and word in fname:
-                            desc = self.brain.describe_file(rel_path)
-                            if desc and "not indexed" not in desc.lower():
-                                ctx_parts.append(f"[File: {rel_path}]\n{desc[:600]}")
-                                matched_file = True
-                                matched_path = rel_path
-                                break
+                            if rel_path not in semantic_files:
+                                desc = self.brain.describe_file(rel_path)
+                                if desc and "not indexed" not in desc.lower():
+                                    _append(f"[File: {rel_path}]\n{desc[:500]}")
+                            matched_file = True
+                            matched_path = rel_path
+                            break
                     if matched_file:
                         break
 
-            # If a file was matched, also include actual file content snippet
-            if matched_path and self.brain.config and self.brain.config.project_path:
+            # Source-code block — only if file was lexically named AND not
+            # already covered by semantic AND budget allows a useful chunk.
+            if (matched_path and matched_path not in semantic_files
+                    and self.brain.config and self.brain.config.project_path
+                    and budget > PROJECT_SUMMARY_RESERVE + 300):
                 try:
                     full_path = os.path.join(self.brain.config.project_path, matched_path)
                     if os.path.exists(full_path):
+                        # Budget-aware read: never take more than what's
+                        # left minus the project-summary reserve. Used to
+                        # always read 3000 chars.
+                        avail = budget - PROJECT_SUMMARY_RESERVE - 50  # margin
+                        read_size = max(500, min(2000, avail))
                         with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-                            content = f.read(3000)  # first 3000 chars
-                        ctx_parts.append(f"[Source code of {matched_path}]\n```\n{content}\n```")
+                            content = f.read(read_size)
+                        _append(f"[Source code of {matched_path}]\n```\n{content}\n```")
                 except Exception:
-                    pass  # file read failed, continue without content
+                    pass
 
-            # Find mentioned functions with details
+            # Function-name lexical match
             for func_name in list(self.brain.graph._function_lookup.keys())[:300]:
                 if len(func_name) > 3 and func_name.lower() in query_lower:
                     info = self.brain.find_function(func_name)
                     if info and "not found" not in info.lower():
-                        ctx_parts.append(f"[Function: {func_name}]\n{info[:400]}")
+                        _append(f"[Function: {func_name}]\n{info[:350]}")
                         break
 
-            # Always include project summary
+            # Project summary — guaranteed to fit (we reserved space for it)
             stats = self.brain.graph.stats()
-            ctx_parts.append(
+            summary = (
                 f"[Project: {os.path.basename(self.brain.config.project_path)}] "
                 f"{stats['files']} files, {stats['functions']} functions, "
                 f"{stats['classes']} classes, {stats['edges']} dependency edges"
             )
+            # Force-append even if over budget — this line is critical UX
+            ctx_parts.append(summary)
 
             return "\n".join(ctx_parts) if ctx_parts else ""
         except Exception:
+            # Absolute-silent fallback
             return ""
 
     def _get_git_context(self, query: str) -> str:

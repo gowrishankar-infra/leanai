@@ -179,15 +179,19 @@ def install_dependencies():
 
 
 def _install_individual(pip_cmd):
-    """Install packages one by one."""
+    """Install packages one by one. Used when bulk install fails."""
     packages = [
         "llama-cpp-python",
         "chromadb",
+        "sentence-transformers",
+        "rank-bm25",           # M6 InfiniteContext — hybrid retrieval
+        "huggingface-hub",
         "fastapi",
         "uvicorn",
-        "sentence-transformers",
-        "huggingface-hub",
         "numpy",
+        "pydantic",
+        "psutil",
+        "pytest",
     ]
 
     for pkg in packages:
@@ -323,15 +327,23 @@ def main():
     print("  To start LeanAI:")
     print("    python main.py")
     print()
-    print("  First thing to do:")
-    print("    /brain .          # scan your project")
-    print("    /model auto       # auto-switch by complexity")
+    print("  First thing to do (unlocks project-aware features):")
+    print("    /brain .          # scan + auto-build AST-grounded semantic index")
+    print("    /model auto       # auto-routes queries to the best-suited model")
+    print()
+    print("  Key LeanAI features:")
+    print("    /ask <question>   # hybrid semantic + BM25 + graph retrieval (M6)")
+    print("    /sentinel         # security analysis — 12 OWASP vuln classes (M1)")
+    print("    /chainbreak       # multi-stage attack chain detection (M2)")
+    print("    /exploit --all    # benign proof-of-concept demos (M3)")
+    print("    /forensics <fn>   # deterministic git+AST archaeology (M4)")
     print()
     print("  Upgrade models (recommended, ~17 GB each):")
     print("    python download_models.py gemma4-26b    # best for frontend/UI")
     print("    python download_models.py qwen35-27b    # best for backend/reasoning")
     print()
-    print("  Then just ask questions about your code!")
+    print("  Full command reference: COMMANDS.md")
+    print("  Project README:         README.md")
     print()
 
     # Ask if they want to launch

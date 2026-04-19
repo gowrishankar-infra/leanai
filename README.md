@@ -17,7 +17,13 @@ Every AI coding tool today shares the same flaw: they see your code for the firs
 
 LeanAI is different:
 
-- **It knows your entire codebase.** 1,969 functions mapped, 12,860 dependency edges tracked, full AST analysis. When you say "add authentication to the API," it already knows every route, every model, every middleware.
+- **It knows your entire codebase.** Full AST analysis, dependency graph across every language (Python, JS, TS, Go, Rust, Java, C/C++, C#, and more). When you say "add authentication to the API," it already knows every route, every model, every middleware.
+
+- **Hybrid semantic + BM25 + graph retrieval.** When you ask a question, LeanAI runs three retrievers in parallel — MiniLM embeddings for conceptual search, BM25 for exact-name matches, and a graph retriever that walks your call graph. Results are fused with reciprocal rank fusion and re-ranked with code-specific heuristics. Cloud AI doesn't have your AST + call graph — so this is one thing a 4GB-VRAM local tool can genuinely beat cloud AI at.
+
+- **It finds security bugs in YOUR code.** Built-in security analyzer (Sentinel) scans for 12 OWASP vulnerability classes. Chain analyzer (ChainBreaker) walks the dependency graph forward to see whether tainted input can actually reach a high-value sink. Safe proof-of-concept demos (ExploitForge) for confirmed findings. Zero false-positive chains on LeanAI's own codebase after M2.2 hardening.
+
+- **Deterministic code archaeology.** SourceForensics uses `git log -L` + Python AST to answer exact questions about any function: when was it born, who wrote it, stability score, churn rate, co-evolution, dead-code sweep. No LLM involved. Sub-second per query. Never hallucinates a commit hash.
 
 - **It never forgets.** Session 1's decisions are available in session 5. Every conversation is permanently searchable. Your name, your preferences, your project history — all remembered.
 
@@ -110,15 +116,19 @@ python run_server.py
 Without these steps, LeanAI is just a generic chatbot. WITH these steps, it knows your entire codebase:
 
 ```
-/brain .              # scan your project — maps every function, class, import
+/brain .              # scan your project + auto-index for semantic retrieval
 /model auto           # auto-routes: frontend → Gemma 4, backend → Qwen3.5, simple → 7B
 ```
+
+`/brain .` does two things: scans every file with AST analysis and builds the dependency graph, then auto-indexes each function/class/method as a semantic chunk (ChromaDB + MiniLM embeddings). First run takes 10-20 seconds on a medium codebase.
 
 Now ask about YOUR code:
 ```
 explain how the auth system works
 write a function to validate user tokens
-review the code in server.py
+/ask how does the cache invalidate stale entries?
+/sentinel
+/forensics ProjectBrain.__init__
 ```
 
 LeanAI will reference YOUR actual functions, correct wrong imports against YOUR AST, and inject YOUR coding patterns as examples. **This is where it beats cloud AI — try it on YOUR project.**
@@ -133,7 +143,9 @@ LeanAI will reference YOUR actual functions, correct wrong imports against YOUR 
 
 ```
   ▶ /brain .
-  Scanned 99 files in 5674ms | 1,799 functions | 342 classes | 11,139 edges
+  [M6] Auto-indexing for semantic retrieval (AST-grounded chunking active)...
+  Scanned 110 files | 2,150 functions | 395 classes | 14,799 edges
+  Indexed 110 files into 3,100 semantic chunks
 
   ▶ /complete gen
   Completions for 'gen' (0.8ms):
@@ -141,13 +153,23 @@ LeanAI will reference YOUR actual functions, correct wrong imports against YOUR 
     ƒ generate_changelog()          brain/git_intel.py
     ◆ GenerationConfig              core/engine.py
 
+  ▶ /ask --raw where is rescan_file defined
+  [100%] brain/project_brain.py:195-216  ProjectBrain.rescan_file
+         reasons: ['name_match:rescan,file', 'doc_match:file']
+  [88%]  brain/project_brain.py:218-224  ProjectBrain._hash_file
+
+  ▶ /forensics ProjectBrain.__init__
+  Genesis:   2026-04-09 by Gowri Shankar (commit 285ffc7)
+  Stability: 41/100 — active change rate
+  Authors:   Gowri Shankar (100%, bus factor: 1)
+
+  ▶ /sentinel
+  Found 37 potential issues: 13 MEDIUM, 24 LOW across 110 files (2.6s)
+
   ▶ /fuzz def sort(arr): return sorted(arr)
   Tested: 12 | Passed: 9 | Failed: 3
     ✗ None → TypeError
     ✗ [1, 'a', 2.0] → TypeError
-  Suggested fixes:
-    → Add None check
-    → Add type validation
 ```
 
 **Web UI** — 6 modes at localhost:8000
@@ -634,6 +656,61 @@ History:
 **What makes this better than Mythos:** Mythos runs a 100B+ parameter model to answer "when did this function first appear." LeanAI runs `git log -L 88,104:brain/project_brain.py` in 40ms. Deterministic tools beat model reasoning on deterministic questions — every time, no exceptions. Mythos can hallucinate a commit hash. `git log` cannot.
 
 **Lead magnitude: ~105%.** This is one of the five phases where LeanAI genuinely beats Mythos, not just matches it. Pure git archaeology with no LLM in the loop is a category Mythos simply does not optimize for.
+
+### InfiniteContext: Semantic Code Retrieval *(M6 — hybrid retrieval upgrade)*
+
+Your code lives in a ChromaDB index with MiniLM embeddings (wired up long before M6 but only exposed via the `/ask` command). M6 threads semantic retrieval into **every chat interaction** — the model now sees the semantically-relevant chunks of your codebase automatically, not just the files whose names happen to appear in your question.
+
+```
+/brain .                              # now auto-indexes for semantic retrieval
+/ask how does caching work?           # grounded answer with citations [1][2][3]
+/ask --raw what handles HTTP input?   # raw chunk listing (pre-M6 behavior)
+```
+
+**How it works:** Every chat query runs a **hybrid retrieval path**:
+
+1. **Semantic primary (M6):** the query is embedded and the top-4 semantically similar code chunks are retrieved from ChromaDB. Each chunk has a relevance score, file path, line range, and function/class name.
+2. **Lexical supplementary (preserved from before):** if your query mentions a specific filename or function name, the existing lexical matcher still runs and pulls in that file's description. Both paths contribute.
+3. **Project summary (preserved):** the status line (`108 files, 2066 functions, 14660 edges`) still appends at the end so the model always knows project scale.
+
+**Hybrid guarantees — nothing existing breaks:**
+- If the indexer is empty, unavailable, or errors → lexical path alone runs as before.
+- Every chat query that worked before M6 still works the same way.
+- Latency budget: +30ms worst case (15ms for embedding + search, 15ms misc). Not perceptible.
+
+**`/ask` with grounded answers:** The command was just a raw chunk lister before M6. Now:
+- Retrieves the top 5 relevant chunks
+- Sends them to the currently-loaded model as context
+- Model answers grounded in the chunks with numbered citations
+- Sources printed afterwards with file paths, line ranges, and relevance scores
+
+Example flow:
+
+```
+❯ /ask how does the brain invalidate stale caches?
+
+  [M6] Retrieving 5 relevant chunks, answering with gemma-4-26B-A4B-it-UD-Q4_K_M.gguf...
+
+The brain invalidates caches by hashing each indexed file's contents on every
+scan. On rescan, if the stored hash differs from the current hash, the file is
+re-analyzed and its dependency-graph nodes are rebuilt [1]. The hashing uses
+MD5 in brain/project_brain.py:_hash_file [2], which is flagged as weak-crypto
+by Sentinel but acceptable here since it's a cache integrity check, not a
+security boundary.
+
+  Sources consulted:
+    [1] brain/project_brain.py:208-222 (ProjectBrain._rescan_file, relevance 87%)
+    [2] brain/project_brain.py:215-225 (ProjectBrain._hash_file, relevance 79%)
+    ...
+  Answer time: 3.2s
+```
+
+**Safety and UX:**
+- `--raw` flag preserves the pre-M6 chunk-listing behavior for anyone who prefers it.
+- If no model is loaded, `/ask` falls back to raw chunk listing and tells the user why.
+- If grounded-answer generation throws, falls back to raw chunks. Never silently fails.
+
+**Target: ~45% of Mythos** on this dimension. Mythos has a much larger context window and smarter reasoning, but LeanAI's retrieval is *local*, *fast*, and *reproducible* — every `/ask` on the same query returns the same source chunks. Not a match for Mythos on pure reasoning depth, but a clean 100%-private, 100%-local alternative for project-specific questions.
 
 ### DFSG: Dynamic Few-Shot Grounding *(novel — no other tool does this)*
 

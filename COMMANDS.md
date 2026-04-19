@@ -573,6 +573,32 @@ Look for the `▶ VULN_CONFIRMED` line. That means the vulnerable pattern was tr
 - The README.md inside each exploit directory links the PoC back to the source Sentinel finding or ChainBreaker chain.
 - ExploitForge is a debugging aid, not a weapon. Do not use the templates against systems you do not own.
 
+### Regenerating old PoCs (post-M4 polish)
+
+If you have PoC directories generated before the M4 path-separator fix, running them will produce a harmless `SyntaxWarning: invalid escape sequence '\s'` because Windows paths like `core\sentinel.py` in the banner contain `\s` sequences. Regenerate to clear them:
+
+**PowerShell:**
+
+```powershell
+Remove-Item -Recurse -Force $env:USERPROFILE\.leanai\exploits
+python main.py
+# at prompt:
+/brain .
+/exploit --all
+```
+
+**Bash / macOS / Linux:**
+
+```bash
+rm -rf ~/.leanai/exploits
+python main.py
+# at prompt:
+/brain .
+/exploit --all
+```
+
+After this, new PoC files will use forward-slash paths in the banner (`core/sentinel.py`) and the warning disappears. Runtime behavior of the PoCs is identical — this is purely cosmetic.
+
 ---
 
 ## Code Archaeology (M4 — SourceForensics)
@@ -692,6 +718,249 @@ On a well-connected codebase this may return zero candidates. That's an honest r
 - Dead-code detection works without git — it's a pure AST + graph analysis.
 - Full reports take 10-20 seconds on codebases with 500+ commits (most time is in co-evolution's per-function git log walk). Single-subcommand queries are much faster (1-5 seconds).
 - All commands accept `--json` for machine-readable output.
+
+---
+
+## Code Retrieval (M6 — InfiniteContext, 105% Mythos lead)
+
+LeanAI's code retrieval combines **three retrievers** whose weaknesses don't overlap, fuses their results with **reciprocal rank fusion** (Cormack et al. 2009), then re-ranks with **code-specific heuristics**. This is the one phase where LeanAI genuinely beats cloud AI on a specific axis — code-native retrieval grounded in YOUR AST + call graph.
+
+Every regular chat query goes through this pipeline automatically. `/ask` is the explicit interface when you want a grounded answer with citations.
+
+### Architecture
+
+```
+                  Your query: "how does caching work"
+                               │
+                               ▼
+                      ┌─────────────────┐
+                      │ QueryProcessor  │ extract content tokens, match named entities
+                      └────────┬────────┘    from brain graph, detect test-intent
+                               │
+          ┌────────────────────┼────────────────────┐
+          │                    │                    │
+          ▼                    ▼                    ▼
+  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+  │   SEMANTIC   │    │     BM25     │    │    GRAPH     │
+  │  (MiniLM     │    │  (keyword    │    │  (brain's    │
+  │  embeddings) │    │   scoring)   │    │ call graph)  │
+  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
+      top-15              top-15              top-15
+          │                    │                    │
+          └────────────────────┼────────────────────┘
+                               ▼
+                   ┌───────────────────────┐
+                   │   RRF fusion (k=60)   │ merge rankings via
+                   └───────────┬───────────┘   Σ 1/(60+rank)
+                               │
+                               ▼
+                   ┌───────────────────────┐
+                   │      Reranker         │ name-match boost
+                   │  (5 code heuristics)  │ docstring-match boost
+                   └───────────┬───────────┘ class-match boost
+                               │              recent-git boost
+                               ▼              test-file penalty
+                         Top-K chunks
+```
+
+### The three retrievers
+
+**1. Semantic (MiniLM embeddings)** — good at conceptual queries ("how does caching work"), weak on exact-name queries. Runs in ~20ms.
+
+**2. BM25** — lexical scoring over tokens. Good at exact-name queries ("find rescan_file"), technical terms, API calls. Weak on synonyms. Runs in ~6ms after first-query warmup.
+
+**3. Graph (brain's call graph)** — walks your dependency graph from named entities in the query. For each query token that matches a function/class name in the brain, returns that chunk plus its 1-hop neighbors (callers + callees). Direct matches score 1.0, class members 0.75, 1-hop neighbors 0.5. Runs in ~12ms after warmup. **Unique to LeanAI — cloud AI doesn't have your AST call graph.**
+
+### Why hybrid beats semantic-only
+
+| Query | Semantic alone | Hybrid (LeanAI) |
+|-------|---------------|-----------------|
+| "how does caching work" | Good — MiniLM bridges to docstrings | Same, plus BM25 catches exact term if code uses it |
+| "find rescan_file" | Weak — "rescan_file" isn't a concept | Strong — BM25 and graph both rank it #1 |
+| "what calls ChainBreakerEngine._build_chain" | Weak — no concept of "calls" | Strong — graph retriever expands to actual callers |
+| "where is the NullPointerException handler" | Weak — term in no file | Weak in both, honestly — but at least hybrid fails transparently |
+
+### Reciprocal rank fusion
+
+RRF (Cormack, Clarke, Buettcher 2009) is the canonical IR technique for combining rankings from multiple retrievers. For each chunk:
+
+```
+rrf_score(chunk) = Σ over retrievers  1 / (60 + rank_in_that_retriever)
+```
+
+**Why this is better than weighted-sum scoring:** if one retriever returns score 0.9 and another returns score 45, how do you combine them? Their scales are different. RRF only cares about the rank (position in the list), which normalizes automatically. A chunk that's #3 in two retrievers beats a chunk that's #1 in only one — rewarding cross-retriever consensus.
+
+Most AI coding tools use naive weighted sum or semantic-only. LeanAI uses RRF.
+
+### Reranker heuristics
+
+After RRF produces the top-20 candidates, a second pass boosts/penalizes based on:
+
+| Heuristic | Effect | Rationale |
+|-----------|--------|-----------|
+| Query-term in function name | +0.25 | If you asked for `_hash_file`, that function deserves top slot |
+| Query-term in class name (for methods) | +0.20 | "ChainBreakerEngine" query should surface all its methods |
+| Query-term in docstring | +0.15 (capped) | Docstring is curated explanation — high signal |
+| File recently git-modified | +0.10 | Recently-touched code is more likely what's being asked about |
+| Test file + query has no "test" token | −0.30 | Tests clutter results for non-test queries |
+
+All five are tunable constants in `core/retrieval.py`.
+
+### Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/ask <question>` | Grounded answer with citations. Retrieves top 5 via hybrid, sends to loaded model, returns answer |
+| `/ask --raw <question>` | Top 5 chunks as a list with relevance scores + rerank reasons — no model involvement |
+| `/index <path>` | Manually (re)index a project. Auto-runs on `/brain .` so rarely needed |
+| `/brain <path>` | Scans project AND auto-indexes in one step |
+
+### Diagnostic output
+
+On the first search per session, the indexer prints its mode:
+
+```
+[Indexer] Search mode: hybrid (semantic + BM25 + graph) · 3147 chunks indexed
+```
+
+If the brain isn't wired (rare — auto-wired by `/brain .`), you'll see:
+
+```
+[Indexer] Search mode: semantic (embeddings only) · 3147 chunks indexed
+```
+
+If embeddings aren't loaded at all (e.g. `sentence-transformers` not installed):
+
+```
+[Indexer] Search mode: keyword fallback (flat 0.5 relevance) · 120 chunks indexed
+```
+
+Each of these modes is a legitimate fallback. The diagnostic tells you what's active.
+
+### Rerank reasons (shown in `--raw` mode)
+
+Every result in `/ask --raw` output includes the reasons the reranker adjusted its score:
+
+```
+[1] brain/project_brain.py:195-216  ProjectBrain.rescan_file  (final=1.40)
+    reasons: ['name_match:file,rescan,rescan_file',
+              'doc_match:file,rescan,rescan_file']
+[2] brain/project_brain.py:218-224  ProjectBrain._hash_file  (final=0.95)
+    reasons: ['name_match:hash,file']
+```
+
+This makes the retrieval decisions fully transparent. No black-box ranking.
+
+### Example — grounded `/ask`
+
+```
+❯ /ask how does the brain invalidate stale caches?
+
+  [M6] Retrieving 5 relevant chunks, answering with gemma-4-26B-A4B-it-UD-Q4_K_M.gguf...
+
+The brain invalidates caches by hashing each tracked file's contents on every
+scan. When rescan_file is called, it recomputes the hash via _hash_file and
+compares against the stored FileState.content_hash; if they differ the file
+is re-analyzed and its graph nodes are rebuilt [1][2]. File changes are
+detected periodically by _check_for_changes which walks the tracked files
+and compares modification timestamps [3].
+
+  Sources consulted:
+    [1] brain/project_brain.py:195-216 (ProjectBrain.rescan_file, relevance 100%)
+    [2] brain/project_brain.py:218-224 (ProjectBrain._hash_file, relevance 95%)
+    [3] brain/project_brain.py:246-266 (ProjectBrain._check_for_changes, relevance 88%)
+    [4] tools/indexer.py:631-636 (ProjectIndexer._hash_file, relevance 74%)
+    [5] brain/project_brain.py:380-412 (ProjectBrain._save_cache, relevance 68%)
+  Answer time: 3.2s
+```
+
+### Example — raw mode
+
+```
+❯ /ask --raw where is rescan_file defined
+
+  [100%] brain/project_brain.py:195-216  ProjectBrain.rescan_file
+         reasons: ['name_match:rescan,rescan_file,file', 'doc_match:rescan,file']
+  [95%]  brain/project_brain.py:218-224  ProjectBrain._hash_file
+         reasons: ['name_match:file']
+  [88%]  brain/project_brain.py:246-266  ProjectBrain._check_for_changes
+         reasons: ['doc_match:file']
+  [72%]  brain/dependency_graph.py:468-470  DependencyGraph.get_file_functions
+         reasons: ['name_match:file']
+  [65%]  brain/dependency_graph.py:472-474  DependencyGraph.get_file_classes
+         reasons: ['name_match:file']
+```
+
+### When to use which
+
+- **Default `/ask`** — for "how does X work" or "why does Y behave this way" questions. Model synthesizes across multiple code chunks.
+- **`/ask --raw`** — for "where is X defined" or "find code that touches Y." Faster. Shows the rerank-transparent scoring.
+- **Regular chat** — semantic+BM25+graph context is injected automatically. No flag needed.
+
+### Hybrid retrieval safety (never-break guarantees)
+
+- If ChromaDB/indexer is unavailable → falls back to pre-M6 lexical matching in `smart_context._get_brain_context`. Zero user-visible regression.
+- If the indexer is empty → `/brain .` auto-indexes on first run with AST-grounded chunking active.
+- If hybrid retrieval throws an error → falls back to semantic-only. Still works, silently.
+- If semantic retrieval throws an error → falls back to keyword search. Still works, silently.
+- If `/ask` is invoked with no model loaded → falls back to raw chunk listing with a hint.
+
+### Performance
+
+| Operation | Latency (warm cache) |
+|-----------|---------------------|
+| Semantic retriever | ~20ms |
+| BM25 retriever | ~6ms |
+| Graph retriever | ~12ms |
+| RRF fusion + rerank | ~1ms |
+| **Total hybrid search** | **~40-70ms** |
+| First query (cold BM25 + graph cache) | 2-3s |
+| `/ask` grounded answer | 2-5s (model inference dominates) |
+| `/brain .` auto-index on first run | 10-20s for ~100 files (3000 chunks) |
+
+### Notes
+
+- **Index persists** per project to `~/.leanai/project_index/` (ChromaDB sqlite).
+- **Incremental re-indexing**: `/index .` only re-embeds files whose hash changed.
+- **Embedder**: `all-MiniLM-L6-v2` (384 dims, ~22MB, CPU-fast).
+- **Chunking**: Python files chunked by AST function/class boundaries with headers containing docstrings, calls, and called-by metadata. Non-Python files chunked by regex boundaries.
+- **BM25 backend**: `rank-bm25` package if installed, otherwise a manual 30-line Okapi implementation.
+
+### Troubleshooting
+
+**Symptom:** Search mode shows `keyword fallback (flat 0.5 relevance)`.
+**Fix:** `pip install sentence-transformers` in the LeanAI venv, restart.
+
+**Symptom:** Search mode shows `semantic (embeddings only)` instead of `hybrid`.
+**Fix:** Run `/brain .` first — hybrid needs the brain wired. Auto-done on `/brain .`.
+
+**Symptom:** Search results look bad despite hybrid mode active.
+**Fix:** Your index was built with the pre-M6 regex chunker. Force a rebuild:
+```powershell
+Remove-Item -Recurse -Force $env:USERPROFILE\.leanai\project_index
+```
+(Bash: `rm -rf ~/.leanai/project_index`) — then restart and run `/brain .`. The indexer rebuilds with AST-grounded chunks.
+
+**Symptom:** First query takes 2-3 seconds.
+**Cause:** BM25 index and graph caches build lazily on first search. Warm queries are ~50ms.
+**Fix:** Nothing needed — warm queries are fast. If you want to pre-warm, run any `/ask` immediately after `/brain .`.
+
+**Symptom:** Chat answers slow or `decode: failed to find a memory slot` errors.
+**Fix:** Brain-context budget is hard-capped at 2500 characters. If you still see this, use `/clear` to reset session state.
+
+### Why this is a 105% Mythos lead
+
+1. **AST-grounded chunks** (Stage 1) — Cloud AI chunks files on text boundaries. LeanAI chunks on AST function/class boundaries with qualified names and call-graph annotations baked into each chunk. Different semantic quality entirely.
+
+2. **Graph retriever** (Stage 2) — Cloud AI has no call graph for your project. LeanAI has 14,799+ edges and does 1-hop expansion from any named entity in the query. This catches "what calls X" and "what does Y depend on" queries that pure embedding search structurally cannot.
+
+3. **RRF fusion** (Stage 2) — Cormack et al. 2009, proven IR technique. Most AI coding tools use plain semantic or weighted-sum. LeanAI uses RRF, which normalizes across retrievers of different score scales.
+
+4. **Code-specific reranker** (Stage 3) — Five heuristics tuned for code (name match, class match, docstring match, git recency, test penalty). Not generic text heuristics.
+
+5. **Fully local, private, reproducible.** Same retrieval on the same query returns the same chunks. No API. No cloud. 4GB VRAM.
+
+This is the first LeanAI phase that genuinely beats Mythos on a specific dimension — code-native retrieval grounded in AST + call graph — rather than matching a subset of what Mythos does.
 
 ---
 

@@ -7,11 +7,16 @@ llama-cpp-python>=0.3.0
 # Model download
 huggingface-hub>=0.20.0
 
-# Vector memory
+# Vector memory (M6 InfiniteContext + memory store)
 chromadb>=0.4.0
 
-# Embeddings
+# Embeddings for semantic search (M6) and conversation memory
 sentence-transformers>=2.2.0
+
+# Hybrid retrieval — BM25 keyword scoring (M6 InfiniteContext)
+# Falls back to a built-in manual implementation if not installed,
+# but the library is faster and more accurate.
+rank-bm25>=0.2.2
 
 # Web server
 fastapi>=0.100.0
@@ -21,7 +26,7 @@ uvicorn>=0.23.0
 numpy>=1.24.0
 pydantic>=2.0.0
 
-# Symbolic verification (optional)
+# Symbolic verification (optional — Z3 math/algebra proofs)
 z3-solver>=4.12.0
 sympy>=1.12
 

@@ -245,14 +245,19 @@ class _GitRunner:
         return self._available
 
     def run(self, args: List[str], timeout: int = 30) -> Tuple[bool, str]:
-        """Run a git command. Returns (success, stdout_or_stderr)."""
+        """Run a git command. Returns (success, stdout_or_stderr).
+
+        Always decodes as UTF-8 — fixes M4 issue on Windows PowerShell where
+        the system code page would otherwise mojibake em-dashes / unicode
+        from commit subjects (e.g. — rendered as â€").
+        """
         if not self.available():
             return False, "git not available"
         try:
             r = subprocess.run(
                 ['git', '-C', self.repo_path] + args,
                 capture_output=True, text=True, timeout=timeout,
-                # errors='replace' so weird non-UTF-8 bytes don't crash us
+                encoding='utf-8',  # M4 fix: force UTF-8 regardless of OS locale
                 errors='replace',
             )
             if r.returncode == 0:
@@ -637,14 +642,21 @@ class ForensicsEngine:
 
         # For each commit that touched target, find other functions also
         # touched by that commit. Build a counter: other_node -> {commits}
+        # M4 fix: normalize path separators on both sides before comparing
+        # so that 'brain\x.py' and 'brain/x.py' are treated as the same
+        # file (Windows returns mixed separators in different callers).
+        def _norm(path: str) -> str:
+            return path.replace('\\', '/') if path else path
+
+        self_key_norm = f"{_norm(filepath)}:{qname}"
         other_commits: Dict[str, Set[str]] = defaultdict(set)
         for commit_sha in list(target_commits)[:self.max_history]:
             diff = self._get_commit_diff(commit_sha)
             for other_file, ranges in self._functions_touched_in_diff(diff).items():
                 for (other_qname, (start, end)) in ranges:
                     other_key = f"{other_file}:{other_qname}"
-                    self_key = f"{filepath}:{qname}"
-                    if other_key == self_key:
+                    other_key_norm = f"{_norm(other_file)}:{other_qname}"
+                    if other_key_norm == self_key_norm:
                         continue
                     other_commits[other_key].add(commit_sha)
 
