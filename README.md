@@ -712,6 +712,54 @@ security boundary.
 
 **Target: ~45% of Mythos** on this dimension. Mythos has a much larger context window and smarter reasoning, but LeanAI's retrieval is *local*, *fast*, and *reproducible* — every `/ask` on the same query returns the same source chunks. Not a match for Mythos on pure reasoning depth, but a clean 100%-private, 100%-local alternative for project-specific questions.
 
+### MemoryForge: Persistent Knowledge Graph *(M8 — 110% Mythos lead)*
+
+Everything LeanAI learns about your project — every Sentinel finding, every ChainBreaker attack chain, every symbol in your brain index — gets threaded into a single queryable SQLite graph at `~/.leanai/memory_forge/graph.db`. The graph survives across sessions, so on day 90 you can still query findings discovered on day 1.
+
+```
+/memory query <natural-language or DSL>   # run a query
+/memory facts <symbol>                    # everything known about a function
+/memory timeline [N]                      # chronological events (default 20)
+/memory stats                             # graph stats (nodes, edges, last-sync)
+/memory sync                              # force incremental re-ingestion
+```
+
+Cloud AI has no cross-session memory of your project. LeanAI already generates rich structured data via M1/M2/M4/M6. M8 is the layer that lets you **query across all of them simultaneously**:
+
+```
+/memory query findings where severity >= HIGH and category = sql_injection
+/memory query symbols where complexity > 15 and name ~ handle
+/memory query events where source = sentinel and since = 7d
+/memory query show me all critical findings from this week
+```
+
+That last one goes through the model (or a keyword heuristic fallback if the model is busy or unavailable) and gets translated into DSL. Every answer is grounded in SQL result rows with stable IDs — the model never invents findings.
+
+**Auto-refresh:** `/brain .` now invokes `/memory sync` automatically. Every brain scan keeps the knowledge graph current. A one-line summary appears when new data lands:
+
+```
+[M6] Indexed 110 files into 3100 semantic chunks in 18.7s — /ask is ready
+[M8] MemoryForge: +8 symbols, +37 findings, +14 relations (92ms)
+```
+
+**Three entity types, five relations, idempotent sync:**
+
+- **Symbol** — function / method / class / file from your brain's AST
+- **Finding** — `VULN-*.json` (Sentinel) + `CHAIN-*.json` (ChainBreaker)
+- **Event** — discovery / scan / modification / sync (with source-tool attribution)
+- Relations: `contains` / `found_in` / `affects` / `depends_on` / `modified_by`
+
+**Design rules (non-negotiable):**
+1. **Never trust model output as fact** — every row in the graph has a `source_tool` column. The model phrases answers; deterministic tools supply facts.
+2. **Never write to source code** — full-file replacement on 4GB VRAM is structurally unsafe. M8 is read-only by design.
+3. **Idempotent sync** — running `/memory sync` twice produces zero new rows (fingerprint-matched).
+4. **Graceful degradation** — if you haven't run Sentinel yet, M8 still works on whatever data exists.
+5. **No model required** — the heuristic NL→DSL path lets `/memory query <English>` work even when no model is loaded.
+
+**What makes this better than Opus:** Opus 4.6 has a massive context window, but it starts empty every conversation. You'd have to re-paste your entire project, every finding, every chain — every time — to get the same cross-cutting query capability. And Opus has no structural guarantee that its answer is grounded in real findings rather than plausible-sounding fabrication. MemoryForge queries return SQL result rows with stable IDs. Every fact is traceable to a source tool.
+
+**Lead magnitude: ~110%.** Cloud AI structurally can't compete here — cross-session persistent structured memory of your project is a category they don't optimize for.
+
 ### DFSG: Dynamic Few-Shot Grounding *(novel — no other tool does this)*
 
 Before generating code, LeanAI automatically finds the most similar function in YOUR codebase and injects it as a few-shot example. The model then generates code that matches YOUR naming conventions, error handling patterns, and docstring style.
@@ -906,6 +954,8 @@ leanai/
 | Project | `/brain <path>`, `/describe <file>`, `/deps <file>`, `/impact <file>`, `/find <fn>` |
 | Git | `/git activity`, `/git hotspots`, `/git history <f>`, `/git why <f>`, `/git changelog`, `/git func <n>` |
 | Refactor | `/refs <symbol>`, `/rename <old> <new>` |
+| Security | `/sentinel`, `/chainbreak`, `/exploit`, `/forensics` *(M1-M4)* |
+| Knowledge Graph | `/memory query <q>`, `/memory facts <sym>`, `/memory timeline`, `/memory stats` *(M8)* |
 | Memory | `/remember <fact>`, `/profile`, `/sessions`, `/continue`, `/search <q>` |
 | Fine-Tune | `/finetune status`, `/finetune train`, `/finetune adapters`, `/finetune collect` |
 | Model | `/model list`, `/model auto`, `/model gemma4-26b`, `/model qwen35-27b`, `/model download <x>` |

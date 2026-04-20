@@ -13,7 +13,12 @@
 - [Git Intelligence](#git-intelligence)
 - [Semantic Bisect](#semantic-bisect)
 - [Adversarial Fuzzing](#adversarial-fuzzing)
-- [Sentinel — Autonomous Security Analyzer](#sentinel--autonomous-security-analyzer)
+- [Sentinel — Autonomous Security Analyzer (M1)](#sentinel--autonomous-security-analyzer)
+- [Attack Chain Analysis (M2 — ChainBreaker)](#attack-chain-analysis-m2--chainbreaker)
+- [PoC Generation (M3 — ExploitForge)](#poc-generation-m3--exploitforge)
+- [Code Archaeology (M4 — SourceForensics)](#code-archaeology-m4--sourceforensics)
+- [Code Retrieval (M6 — InfiniteContext)](#code-retrieval-m6--infinitecontext-105-mythos-lead)
+- [Persistent Knowledge Graph (M8 — MemoryForge)](#persistent-knowledge-graph-m8--memoryforge)
 - [Code Execution](#code-execution)
 - [TDD Auto-Fix](#tdd-auto-fix)
 - [Reasoning](#reasoning)
@@ -961,6 +966,190 @@ Remove-Item -Recurse -Force $env:USERPROFILE\.leanai\project_index
 5. **Fully local, private, reproducible.** Same retrieval on the same query returns the same chunks. No API. No cloud. 4GB VRAM.
 
 This is the first LeanAI phase that genuinely beats Mythos on a specific dimension — code-native retrieval grounded in AST + call graph — rather than matching a subset of what Mythos does.
+
+---
+
+## Persistent Knowledge Graph (M8 — MemoryForge)
+
+`/memory` turns everything LeanAI learns about your project into a queryable, cross-session knowledge graph. Sentinel's findings, ChainBreaker's attack chains, and the brain's symbol index are all threaded into a single SQLite graph at `~/.leanai/memory_forge/graph.db`. The graph survives across sessions, so on day 90 you can still query findings discovered on day 1.
+
+### The point
+
+Cloud AI has no cross-session memory of your project. Every time you start a new conversation, it sees your code for the first time. LeanAI already generates rich structured data via M1 (Sentinel), M2 (ChainBreaker), M4 (Forensics) and M6 (retrieval). M8 is the layer that lets you **query across all of them simultaneously**, in plain English or raw DSL:
+
+- *"Which functions have unresolved critical findings?"*
+- *"Show me all attack chains that end in RCE."*
+- *"What did Sentinel discover this week?"*
+- *"Which complex functions haven't been touched since the last refactor?"*
+
+Those are impossible on Claude/Copilot for a real codebase — the raw data they'd need to answer isn't in their context.
+
+### Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/memory query <nl-or-dsl>` | Run a query (natural language or raw DSL) |
+| `/memory facts <symbol>` | Every known fact about a function/class (findings, events, relations) |
+| `/memory timeline [N]` | Chronological events (default 20) |
+| `/memory stats` | Graph statistics (nodes, edges, last-sync, DB size) |
+| `/memory sync` | Force an incremental re-ingestion from all sources |
+| `/memory reset` | Wipe the graph and start fresh (requires confirmation) |
+| `/memory help` | On-screen grammar reference |
+
+### Auto-refresh
+
+`/brain .` now invokes `/memory sync` automatically after indexing. Every brain scan keeps the knowledge graph current — no manual step required. A one-line summary appears when new data lands:
+
+```
+[M6] Indexed 110 files into 3100 semantic chunks in 18.7s — /ask is ready
+[M8] MemoryForge: +8 symbols, +37 findings, +14 relations (92ms)
+```
+
+### DSL grammar
+
+Small, strict, regular. No parser combinators. If you can read Python, you can read this.
+
+```
+<entity> [where <field> <op> <value> [and ...]] [limit N]
+
+  entity    ::= symbols | findings | events
+  op        ::= = | != | > | < | >= | <= | ~       ( ~ is substring match )
+
+  symbols   fields: name, kind, file, line, signature, complexity, lines
+  findings  fields: finding_id, kind, category, severity, confidence,
+                    file, line, since
+  events    fields: kind, source, description, since
+
+  severity  values: CRITICAL | HIGH | MEDIUM | LOW | INFO   (ordered)
+  since     accepts: 7d | 24h | 2026-04-01
+```
+
+### Examples
+
+```
+/memory query findings where severity >= HIGH
+/memory query findings where category = sql_injection and severity = CRITICAL
+/memory query symbols where complexity > 15
+/memory query symbols where name ~ handle
+/memory query events where source = sentinel and since = 7d
+/memory query findings where file ~ core/server.py
+
+/memory facts handle_request
+/memory facts HTTPServer.handle
+
+/memory timeline 30
+/memory stats
+```
+
+### Natural language works too
+
+If the model's loaded, `/memory query` will try to translate plain English into DSL first. If the model is flaky or off, a keyword-to-DSL heuristic kicks in as a fallback — it never needs a model.
+
+```
+/memory query show me all critical SQL injection findings
+  → findings where severity = CRITICAL and category = sql_injection
+
+/memory query which functions are complex
+  → symbols where kind = function and complexity > 10
+
+/memory query what did sentinel find this week
+  → events where source = sentinel and since = 7d
+```
+
+If neither path produces parseable DSL, you get a clear error message with the grammar reference.
+
+### Example session
+
+```
+▶ /memory stats
+  MemoryForge Graph Stats
+
+    Symbols    487
+      class       42
+      file        111
+      function    287
+      method      47
+    Findings   37
+      CRITICAL    2
+      HIGH        11
+      MEDIUM      24
+    Events     89
+    Relations  1204
+      contains        534
+      found_in        37
+      affects         89
+      depends_on      544
+
+    Last sync: 12s ago
+    DB size:   1.2 MB
+    DB path:   ~/.leanai/memory_forge/graph.db
+
+▶ /memory query findings where severity = CRITICAL
+  DSL: findings where severity = CRITICAL
+  Results: 2
+
+    VULN-2026-0001 CRITICAL  sql_injection  conf=0.90
+      core/server.py:42
+      Unsanitized user input flows to SQL query.
+    CHAIN-2026-0001 CRITICAL  rce            conf=0.85
+      core/server.py:42
+      Unauthenticated RCE
+
+▶ /memory facts handle_request
+  Facts for: handle_request
+
+  Symbols (1)
+    function  core/server.py::handle_request  core/server.py:42
+      complexity=8  sig=def handle_request(req)
+
+  Findings (1)
+    VULN-2026-0001 CRITICAL  sql_injection  (found_in)
+
+  Events (1)
+    2026-04-20  discovery    sentinel  VULN-2026-0001 found: sql_injection
+```
+
+### How the graph is built
+
+Three entity types, five relations, every row fingerprinted for idempotent re-sync:
+
+- **Symbol** — function / method / class / file from `ProjectBrain._file_analyses`
+- **Finding** — `VULN-*.json` (from Sentinel) and `CHAIN-*.json` (from ChainBreaker)
+- **Event** — discovery, scan, modification, fix, sync (with source-tool attribution)
+
+- **`contains`** — file → function, class → method (structural)
+- **`found_in`** — finding → symbol (where it was discovered)
+- **`affects`** — finding → symbol (downstream via taint path or chain step)
+- **`depends_on`** — finding → finding, symbol → symbol (chain anchored to its entry vuln)
+- **`modified_by`** — reserved for forensics integration
+
+### Design rules (non-negotiable)
+
+1. **Never trust model output as fact.** Every row in the graph has a `source_tool` column. The model is allowed to phrase answers, but all underlying facts come from deterministic tools (AST, Sentinel patterns, ChainBreaker graph walk).
+2. **Never write to source code.** MemoryForge reads; it does not edit. Full-file replacement on 4GB VRAM is structurally unsafe — M8 is read-only by design.
+3. **Idempotent sync.** Running `/memory sync` twice in a row produces zero new rows. All ingestion is keyed on stable fingerprints.
+4. **Graceful degradation.** If `~/.leanai/vulns/` or `~/.leanai/chains/` don't exist (no scan has been run yet), sync silently skips them. `/memory` still works on whatever data is present.
+5. **No model required.** The heuristic NL→DSL path lets `/memory query <English>` work even when no model is loaded, or when the loaded model is flaky on this task.
+
+### Storage
+
+- Database: `~/.leanai/memory_forge/graph.db` (honours `$LEANAI_HOME` if set)
+- Schema version: stored in `schema_meta` for future migrations
+- Size: typically 1–5 MB for a mid-sized project
+
+### Non-goals
+
+- Does **not** replace ChromaDB — M6 still does semantic retrieval of code chunks. M8 stores structured facts, not embeddings.
+- Does **not** write to source code.
+- Does **not** invent findings — the model translates questions, never produces facts.
+
+### Lead magnitude: ~110% of Mythos
+
+This is one of the phases where LeanAI genuinely beats Mythos, not just matches it. Cloud AI has no cross-session persistent structured memory of your project — every new conversation starts from zero context. LeanAI's M8 gives you a queryable graph that grows over time, with the model as a translator between human questions and deterministic fact lookups.
+
+### What makes this better than Opus
+
+Opus 4.6 has a massive context window, but it starts empty at every conversation. You'd have to re-paste your entire project, every Sentinel finding, every chain — every time — to get the same cross-cutting query capability. And Opus has no structural guarantee that its answer is grounded in your actual findings rather than plausible-sounding fabrication. MemoryForge queries return SQL result rows with stable IDs and source-tool attribution. Every fact is traceable.
 
 ---
 

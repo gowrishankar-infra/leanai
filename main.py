@@ -95,6 +95,55 @@ _print_lock = _threading.RLock()
 _user_at_prompt = _threading.Event()  # set when waiting on input()
 
 
+def _reassert_console_input_mode():
+    """Re-set the Windows console to cooked mode (line input + echo).
+
+    Background threads that call print() during Python's input() can
+    leave the console in a state where keystrokes aren't echoed. Calling
+    this at the start of every _safe_input() forces the console back to
+    a known-good state. No-op on non-Windows.
+
+    This is the fix for the intermittent "keyboard not working inside
+    LeanAI" bug. Running it at EVERY prompt (not just startup) means even
+    if a background print corrupts the mode, the next prompt repairs it.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+
+        STD_INPUT_HANDLE = -10
+        STD_OUTPUT_HANDLE = -11
+        ENABLE_PROCESSED_INPUT = 0x0001
+        ENABLE_LINE_INPUT = 0x0002
+        ENABLE_ECHO_INPUT = 0x0004
+        ENABLE_PROCESSED_OUTPUT = 0x0001
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+
+        h_in = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        if h_in and h_in != -1:
+            # Force cooked mode: line-buffered input with character echo.
+            # This is what input() needs to work. If a background print()
+            # flipped any of these bits off, we flip them back on here.
+            kernel32.SetConsoleMode(
+                h_in,
+                ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT,
+            )
+
+        h_out = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        if h_out and h_out != -1:
+            current = wintypes.DWORD()
+            if kernel32.GetConsoleMode(h_out, ctypes.byref(current)):
+                kernel32.SetConsoleMode(
+                    h_out,
+                    current.value | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+                )
+    except Exception:
+        pass
+
+
 def _safe_input(prompt: str) -> str:
     """
     Thread-safe input() wrapper.
@@ -113,8 +162,17 @@ def _safe_input(prompt: str) -> str:
     """
     _user_at_prompt.set()
     try:
+        # Flush any pending output from background threads BEFORE drawing
+        # the prompt, so their text doesn't land on top of the prompt.
         sys.stdout.flush()
         sys.stderr.flush()
+
+        # Re-assert Windows console input mode. If a background thread's
+        # print() call corrupted the console mode, this repairs it on
+        # every prompt. This is the fix for the intermittent
+        # "keyboard not working inside LeanAI" issue.
+        _reassert_console_input_mode()
+
         try:
             value = input(prompt)
         finally:
@@ -166,6 +224,10 @@ from core.agac import AGACEngine
 from core.cascade import CascadeInference
 from core.sentinel import SentinelEngine, Severity, format_findings_report
 from core.chainbreaker import ChainBreakerEngine, format_chains_report
+from core.memory_forge import (
+    MemoryForge, DSLParseError,
+    format_query_results, format_facts, format_timeline, format_stats,
+)
 # M4 — forensics helper (Windows-safe node-id filepath extractor)
 def _node_file_for_forensics(node_id: str) -> str:
     if ':' not in node_id:
@@ -570,6 +632,15 @@ def main():
     code_verifier = CodeGroundedVerifier(brain=None)
     agac = AGACEngine(brain=None)
 
+    # ── M8: MemoryForge (persistent knowledge graph) ─────────────
+    # A queryable graph of symbols + Sentinel findings + ChainBreaker
+    # chains, persisted to ~/.leanai/memory_forge/graph.db. Survives
+    # across sessions. Auto-refreshes on /brain .
+    memory_forge = MemoryForge(
+        project_path=os.path.abspath("."),
+        model_fn=model_fn,
+    )
+
     # ── Cascade Inference (7B draft → 32B review) ─────────────
     cascade = CascadeInference(draft_fn=model_fn, review_fn=model_fn, enabled=True)
 
@@ -700,6 +771,7 @@ def main():
 ║  /chainbreak     Multi-stage attack chains (M2)        ║
 ║  /exploit         PoC generation from findings (M3)    ║
 ║  /forensics       Git+AST archaeology (M4)             ║
+║  /memory          Query knowledge graph (M8)           ║
 ║                                                        ║
 ║ BUILD                                                  ║
 ║  /build <task>     Multi-step project builder           ║
@@ -886,6 +958,31 @@ def main():
             except Exception as e:
                 # Never break /brain because indexing failed
                 print(f"  {C.DIM}[M6] (auto-index skipped: {e}){C.RESET}")
+
+            # M8 — auto-refresh MemoryForge (symbol + finding knowledge graph).
+            # Wires the freshly-scanned brain into MemoryForge, then runs an
+            # incremental sync. Cheap: only new or changed symbols/findings
+            # are written. Silent on failure — never breaks /brain.
+            try:
+                if memory_forge is not None:
+                    memory_forge.set_brain(brain)
+                    mf_stats = memory_forge.sync(verbose=False)
+                    if mf_stats.changes > 0:
+                        bits = []
+                        if mf_stats.symbols_added:
+                            bits.append(f"+{mf_stats.symbols_added} symbols")
+                        if mf_stats.findings_added:
+                            bits.append(f"+{mf_stats.findings_added} findings")
+                        if mf_stats.relations_added:
+                            bits.append(f"+{mf_stats.relations_added} relations")
+                        summary = ", ".join(bits) if bits else f"{mf_stats.changes} changes"
+                        print(f"  {C.DIM}[M8] MemoryForge: {summary} "
+                              f"({mf_stats.time_ms}ms){C.RESET}")
+                    if mf_stats.errors:
+                        # Show first error only — rest would clutter the prompt
+                        print(f"  {C.DIM}[M8] (partial sync: {mf_stats.errors[0]}){C.RESET}")
+            except Exception as e:
+                print(f"  {C.DIM}[M8] (memory-forge sync skipped: {e}){C.RESET}")
 
         elif cmd == "/onboard":
             if not brain:
@@ -1953,6 +2050,159 @@ def main():
                     score = r.get("relevance", 0.0)
                     snippet = (r.get("content", "") or "")[:150].replace("\n", " ")
                     print(f"  [{score:.0%}] {rel}: {snippet}")
+
+        # ══════════════════════════════════════════════════════════
+        # MEMORYFORGE (M8) — persistent knowledge graph
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/memory"):
+            # Parse subcommand from the raw user_input (preserves case for args)
+            rest = user_input[7:].strip()
+            if not rest:
+                sub = "help"
+                arg = ""
+            else:
+                parts = rest.split(None, 1)
+                sub = parts[0].lower()
+                arg = parts[1].strip() if len(parts) > 1 else ""
+
+            if sub in ("help", "--help", "-h", "?"):
+                print(f"""
+  {C.BOLD}MemoryForge — persistent knowledge graph (M8){C.RESET}
+
+  {C.CYAN}Usage{C.RESET}
+    /memory query <nl-or-dsl>     Run a query (NL or raw DSL)
+    /memory facts <symbol>        All known facts about a symbol
+    /memory timeline [N]          Chronological events (default 20)
+    /memory stats                 Graph statistics
+    /memory sync                  Force incremental ingestion
+    /memory reset                 Wipe and rebuild (requires confirm)
+    /memory help                  This screen
+
+  {C.CYAN}DSL grammar{C.RESET}
+    <entity> [where <field> <op> <value> [and ...]] [limit N]
+      entity:   symbols | findings | events
+      op:       = != > < >= <= ~    (~ is substring match)
+      symbols:  name kind file line signature complexity lines
+      findings: finding_id kind category severity confidence file line since
+      events:   kind source description since
+      severity: CRITICAL | HIGH | MEDIUM | LOW | INFO   (ordered)
+      since:    7d | 24h | 2026-04-01
+
+  {C.CYAN}Examples{C.RESET}
+    /memory query findings where severity >= HIGH
+    /memory query symbols where complexity > 15
+    /memory query events where source = sentinel and since = 7d
+    /memory query show all critical sql injection findings
+    /memory facts handle_request
+    /memory timeline 30
+
+  {C.DIM}Data sources: Sentinel (VULN-*.json), ChainBreaker (CHAIN-*.json),
+  and ProjectBrain (symbols from AST). Every fact is traced to a source
+  tool — the model never invents findings.{C.RESET}
+""")
+
+            elif sub == "sync":
+                if brain is None:
+                    print(f"  {C.DIM}[M8] No brain loaded — will ingest findings only. "
+                          f"Run /brain . first for full sync.{C.RESET}")
+                else:
+                    memory_forge.set_brain(brain)
+                memory_forge.set_model_fn(model_fn)
+                print(f"[M8] Syncing MemoryForge...", flush=True)
+                mf_stats = memory_forge.sync(verbose=True)
+                bits = []
+                if mf_stats.symbols_added:
+                    bits.append(f"+{mf_stats.symbols_added} symbols")
+                if mf_stats.symbols_updated:
+                    bits.append(f"~{mf_stats.symbols_updated} symbols")
+                if mf_stats.findings_added:
+                    bits.append(f"+{mf_stats.findings_added} findings")
+                if mf_stats.findings_updated:
+                    bits.append(f"~{mf_stats.findings_updated} findings")
+                if mf_stats.relations_added:
+                    bits.append(f"+{mf_stats.relations_added} relations")
+                if mf_stats.skipped_stale:
+                    bits.append(f"{mf_stats.skipped_stale} unchanged")
+                summary = ", ".join(bits) if bits else "no changes"
+                print(f"  {C.DIM}[M8] {summary} ({mf_stats.time_ms}ms){C.RESET}")
+                if mf_stats.errors:
+                    for err in mf_stats.errors:
+                        print(f"  {C.DIM}[M8] warning: {err}{C.RESET}")
+
+            elif sub == "stats":
+                try:
+                    print(format_stats(memory_forge.stats(), color=True))
+                except Exception as e:
+                    print(f"  {C.DIM}[M8] stats failed: {e}{C.RESET}")
+
+            elif sub == "timeline":
+                try:
+                    limit = int(arg) if arg else 20
+                except ValueError:
+                    print(f"  Usage: /memory timeline [N]   (N must be an integer)")
+                    continue
+                try:
+                    events = memory_forge.timeline(limit=limit)
+                    print(format_timeline(events, color=True))
+                except Exception as e:
+                    print(f"  {C.DIM}[M8] timeline failed: {e}{C.RESET}")
+
+            elif sub == "facts":
+                if not arg:
+                    print(f"  Usage: /memory facts <symbol-name>")
+                    print(f"  Example: /memory facts handle_request")
+                    continue
+                try:
+                    facts = memory_forge.facts_for(arg)
+                    print(format_facts(facts, color=True))
+                except Exception as e:
+                    print(f"  {C.DIM}[M8] facts failed: {e}{C.RESET}")
+
+            elif sub == "query":
+                if not arg:
+                    print(f"  Usage: /memory query <natural-language-or-dsl>")
+                    print(f"  Example: /memory query findings where severity = CRITICAL")
+                    continue
+                # Make sure model_fn is current — user may have switched models
+                memory_forge.set_model_fn(model_fn)
+                try:
+                    t0 = time.time()
+                    results, dsl_used = memory_forge.query(arg, use_model=True)
+                    elapsed_ms = int((time.time() - t0) * 1000)
+                    print(format_query_results(results, dsl_used, color=True))
+                    print(f"  {C.DIM}({elapsed_ms}ms){C.RESET}")
+                    sessions.add_exchange(
+                        query=user_input,
+                        response=f"[{len(results)} results] {dsl_used}",
+                        tier="memory_forge", confidence=90,
+                    )
+                except DSLParseError as e:
+                    print(f"  {C.DIM}[M8] {e}{C.RESET}")
+                except Exception as e:
+                    print(f"  {C.DIM}[M8] query failed: {e}{C.RESET}")
+
+            elif sub == "reset":
+                # Destructive — require confirmation via env var so a typo
+                # can't wipe the graph. /memory reset drops every table and
+                # rebuilds the schema empty; the user then runs /memory sync.
+                if os.environ.get("LEANAI_MEMORY_RESET_CONFIRM") != "1":
+                    print(f"  {C.DIM}[M8] /memory reset is destructive. "
+                          f"Wipes the entire graph.{C.RESET}")
+                    print(f"  {C.DIM}To proceed, set LEANAI_MEMORY_RESET_CONFIRM=1 "
+                          f"in this shell and re-run.{C.RESET}")
+                    print(f"  {C.DIM}  PowerShell:  $env:LEANAI_MEMORY_RESET_CONFIRM=\"1\"{C.RESET}")
+                    print(f"  {C.DIM}  bash:        export LEANAI_MEMORY_RESET_CONFIRM=1{C.RESET}")
+                else:
+                    try:
+                        memory_forge.reset()
+                        print(f"  {C.DIM}[M8] Graph reset. Run /memory sync to rebuild.{C.RESET}")
+                    except Exception as e:
+                        print(f"  {C.DIM}[M8] reset failed: {e}{C.RESET}")
+
+            else:
+                print(f"  Unknown /memory subcommand: {sub!r}")
+                print(f"  Try: /memory help")
 
         # ══════════════════════════════════════════════════════════
         # TRAINING
