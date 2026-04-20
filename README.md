@@ -548,7 +548,7 @@ Replaces the previous `/security` command (kept as alias). Pure pattern matching
 
 Six capability stages tracked: `rce`, `exfil`, `privesc`, `secret_read`, `persistence`, `destroy`. Each chain gets a fingerprinted `CHAIN-YYYY-NNNN` ID, a confidence score, and a human-readable narrative. Chains that cross files without a valid import path are filtered by default (they're almost always name-alias artifacts from the model's call resolution). Stale findings — where the flagged sink has since been patched — are automatically skipped and reported.
 
-Each chain persists to `~/.leanai/chains/CHAIN-YYYY-NNNN.json` so ExploitForge (M3), AutoFix (M5), and Aegis (M7) can consume them.
+Each chain persists to `~/.leanai/chains/CHAIN-YYYY-NNNN.json` so ExploitForge (M3) can consume them.
 
 **What makes this better than Opus:** Opus would read individual findings and speculate about connections. ChainBreaker walks the real call graph with receiver-aware resolution, import-reachability filtering, and a Windows-safe node ID parser. The output is structural, not speculative.
 

@@ -477,7 +477,7 @@ Each chain ends at one of six capability sinks:
 - Each chain gets a fingerprinted `CHAIN-YYYY-NNNN` ID, persisted to `~/.leanai/chains/CHAIN-YYYY-NNNN.json`
 - Confidence decays with chain length. Cross-file chains with no valid import path are dropped by default (name-alias artifacts)
 - The stale-finding guard automatically skips findings whose referenced code has since been patched
-- Chains feed forward into ExploitForge (M3), AutoFix (M5), and Aegis (M7)
+- Chains feed forward into ExploitForge (M3)
 
 ---
 

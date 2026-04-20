@@ -25,7 +25,7 @@ Pipeline
   5. A "chain" = entry vuln → 0+ lateral steps → capability stage
   6. Emit chains with auto-generated narrative + stable CHAIN-YYYY-NNNN IDs
   7. Persist to ~/.leanai/chains/CHAIN-YYYY-NNNN.json so ExploitForge (M3),
-     AutoFix (M5), and Aegis (M7) can consume them
+     AutoFix (M5) can consume them
 
 Strict rules
 ────────────
