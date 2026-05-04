@@ -1017,7 +1017,7 @@ For commercial licensing (closed-source use), contact [@gowrishankar-infra](http
 
 Built by **Gowri Shankar** ([@gowrishankar-infra](https://github.com/gowrishankar-infra))
 
-A DevOps engineer from Hyderabad who wanted an AI that runs locally, understands his projects, and never forgets.
+An Azure security Engineer who wanted an AI that runs locally, understands his projects, and never forgets.
 
 ---
 
