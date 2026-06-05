@@ -1153,6 +1153,133 @@ Opus 4.6 has a massive context window, but it starts empty at every conversation
 
 ---
 
+
+## Real-Time File Watching (M9 — Watchguard)
+
+Opt-in daemon that keeps the project brain index and MemoryForge graph
+current as you edit files. Save a file in your editor and `/memory facts`,
+`/deps`, `/describe`, and brain-backed queries reflect the change within
+seconds — no need to re-run `/brain .` manually after every edit.
+
+**Off by default.** Opt in with `/watchguard start`.
+
+### Commands
+
+```
+/watchguard start      Begin watching for file changes
+/watchguard stop       Stop watching
+/watchguard status     Show state, counters, last error
+/watchguard help       Command help
+```
+
+Short alias: `/wg` (e.g. `/wg start`, `/wg status`, `/wg stop`).
+
+### What triggers a rescan
+
+- `*.py`, `*.pyi`, `*.js`, `*.jsx`, `*.ts`, `*.tsx` files
+- Events: created, modified, moved, deleted
+- Located under your project root
+
+### What gets ignored
+
+- `.git/`, `.venv/`, `venv/`, `env/`, `__pycache__/`, `node_modules/`,
+  `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `dist/`, `build/`,
+  `.tox/`, `.vscode/`, `.idea/`
+- `~/.leanai/` — always (prevents self-trigger loops where Watchguard's
+  own DB writes would re-fire it)
+- Anything matching `.gitignore` (conservative substring match)
+
+### Behavior
+
+- **Debounce.** A burst of saves within 2 seconds becomes a single
+  rescan pass. Saving 10 files during a test run won't cause 10 separate
+  rescans.
+- **Auto-pause.** While `/brain`, `/build`, or `/sentinel` are running,
+  Watchguard pauses and resumes on completion. Events during the pause
+  are batched and processed once the command finishes.
+- **Output.** One line per batch, shown between prompts only — never
+  during typing. Example:
+  ```
+  [Watchguard] 3 files rescanned · +5s · +3r (412ms)
+  ```
+  where `s` = symbols, `f` = findings, `r` = relations.
+- **Failures are silent.** Errors go to `~/.leanai/watchguard.log`
+  (rotated at 1 MB, last 3 kept). `/watchguard status` surfaces the
+  most recent error.
+
+### Diagnostic counters in /watchguard status
+
+If `Batches 0 processed` shows up unexpectedly, the `Raw events` line
+tells you why:
+
+```
+Raw events      12 received, 1 accepted, 11 filtered
+```
+
+- **Raw events received** — how many events the OS actually delivered.
+  If this is 0, the OS isn't sending notifications (file outside project,
+  write didn't actually hit disk, IDE using atomic-replace into a
+  different temp dir).
+- **Events accepted** — how many made it past the filter into the
+  processing queue.
+- **Events filtered** — how many got rejected (extension not watched,
+  path in ignore list, outside project root).
+
+A normal save in an editor typically produces 3–10 raw events (modified,
+moved-from, moved-to, atomic-replace) with only 1 accepted.
+
+### Example session
+
+```
+❯❯❯ /brain .
+[Brain] Scanned 115 files in 14203ms
+  [M8] MemoryForge: +22 symbols, +22 relations (372ms)
+
+❯❯❯ /watchguard start
+  Watchguard started. Save a file to trigger a rescan.
+
+❯❯❯                        ← you save core/server.py in your editor
+
+  [Watchguard] 1 file rescanned · +2s (89ms)
+
+❯❯❯ /memory facts handle_request
+  ... now reflects the edit you just made ...
+
+❯❯❯ /watchguard status
+  Watchguard — running
+
+    Uptime          3m 42s
+    Batches         7 processed, 0 failed
+    Files updated   12
+    Raw events      54 received, 7 accepted, 47 filtered
+    Last batch      8s ago
+                    [Watchguard] 1 file rescanned · +2s (89ms)
+    Queue depth     0
+    Pending output  0
+
+❯❯❯ /watchguard stop
+  Watchguard stopped.
+```
+
+### Requirements
+
+`watchdog>=3.0` — included in `requirements.txt`.
+
+If `watchdog` isn't installed, `/watchguard start` returns an error
+message suggesting the install command. LeanAI remains fully functional
+without it; Watchguard is the only feature that requires it.
+
+### Why this matters
+
+Without Watchguard, every code edit you make leaves the MemoryForge
+graph and brain index slightly behind reality. `/memory facts` and
+`/describe` return outdated info until you manually re-run `/brain .`.
+That's fine for occasional use but breaks down when you're iterating
+rapidly. M9 fixes that with an opt-in background watcher that's quiet,
+debounced, and respects your other commands.
+
+---
+
 ## Code Execution
 
 Run Python code directly in LeanAI's sandboxed environment.

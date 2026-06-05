@@ -18,6 +18,12 @@ sentence-transformers>=2.2.0
 # but the library is faster and more accurate.
 rank-bm25>=0.2.2
 
+# File watcher (M9 Watchguard — real-time brain + graph updates)
+# Uses ReadDirectoryChangesW on Windows, inotify on Linux, FSEvents on macOS.
+# Without this, /watchguard start fails gracefully and LeanAI works fine
+# without M9 — only Watchguard itself is unavailable.
+watchdog>=3.0
+
 # Web server
 fastapi>=0.100.0
 uvicorn>=0.23.0

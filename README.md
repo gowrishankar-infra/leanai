@@ -1013,6 +1013,40 @@ For commercial licensing (closed-source use), contact [@gowrishankar-infra](http
 
 ---
 
+
+## M9 — Watchguard (Real-Time File Watcher)
+
+Opt-in daemon that keeps your project brain and MemoryForge graph
+current with the filesystem. Save a file, `/memory facts` reflects
+the change seconds later. No more manual `/brain .` after every edit.
+
+**What triggers a rescan:** `*.py`, `*.pyi`, `*.js`, `*.jsx`, `*.ts`,
+`*.tsx` files created, modified, moved, or deleted under your project
+root.
+
+**What gets ignored:** `.git/`, `.venv/`, `__pycache__/`,
+`node_modules/`, `~/.leanai/`, and anything matching `.gitignore`.
+
+**Behavior:** Debounces bursts (2-second settle window) into single
+rescan passes. Auto-pauses during `/brain`, `/build`, and `/sentinel`
+so it doesn't fire mid-operation. Triggers `brain.rescan_file` +
+`memory_forge.sync` per batch (not Sentinel — that stays manual).
+Failures are silent and logged to `~/.leanai/watchguard.log`
+(rotated at 1 MB, last 3 kept).
+
+**Output:** One line per batch, between prompts only:
+```
+[Watchguard] 1 file rescanned · +2s (89ms)
+```
+
+**Activate:** `/watchguard start` (short: `/wg start`).
+Status: `/watchguard status`. Stop: `/watchguard stop`.
+
+Requires `watchdog>=3.0`.
+
+---
+
+
 ## Author
 
 Built by **Gowri Shankar** ([@gowrishankar-infra](https://github.com/gowrishankar-infra))
