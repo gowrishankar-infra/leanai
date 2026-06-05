@@ -228,6 +228,8 @@ from core.memory_forge import (
     MemoryForge, DSLParseError,
     format_query_results, format_facts, format_timeline, format_stats,
 )
+# M9 — Watchguard (real-time file watcher keeping brain + MemoryForge current)
+from core.watchguard import Watchguard, format_status as format_watchguard_status, watchguard_pause
 # M4 — forensics helper (Windows-safe node-id filepath extractor)
 def _node_file_for_forensics(node_id: str) -> str:
     if ':' not in node_id:
@@ -641,6 +643,18 @@ def main():
         model_fn=model_fn,
     )
 
+    # ── M9: Watchguard (opt-in real-time file watcher) ───────────
+    # Off by default — user opts in with /watchguard start. When
+    # running, keeps brain index + MemoryForge graph current with the
+    # filesystem. Triggers brain.rescan_file + memory_forge.sync only
+    # (NOT Sentinel — Sentinel stays explicit). One-line summary per
+    # batch is queued and drained at the top of each prompt.
+    watchguard = Watchguard(
+        project_path=os.path.abspath("."),
+        brain=None,   # set on /brain . (brain object doesn't exist until then)
+        memory_forge=memory_forge,
+    )
+
     # ── Cascade Inference (7B draft → 32B review) ─────────────
     cascade = CascadeInference(draft_fn=model_fn, review_fn=model_fn, enabled=True)
 
@@ -713,6 +727,16 @@ def main():
 
     while True:
         try:
+            # M9: drain any Watchguard summaries queued by the worker
+            # thread. Printing happens here, BETWEEN prompts, so no
+            # output lands during input() — which would break the
+            # keyboard fix established in M8.1.2.
+            try:
+                for _wg_line in watchguard.drain_pending_output():
+                    print(f"  {C.DIM}{_wg_line}{C.RESET}")
+            except Exception:
+                pass
+
             user_input = _safe_input(get_prompt()).strip()
             ctrl_c_count = 0  # reset on any successful input
         except KeyboardInterrupt:
@@ -725,6 +749,10 @@ def main():
                     speed.cache._save()
                 except Exception:
                     pass
+                try:
+                    watchguard.stop()
+                except Exception:
+                    pass
                 break
             print(f"\n  {C.DIM}(Press Ctrl+C again or type /quit to exit){C.RESET}")
             continue
@@ -734,6 +762,10 @@ def main():
             sessions.save_all()
             try:
                 speed.cache._save()
+            except Exception:
+                pass
+            try:
+                watchguard.stop()
             except Exception:
                 pass
             break
@@ -751,6 +783,10 @@ def main():
             sessions.end_session(current_session.id)
             sessions.save_all()
             speed.cache._save()  # Save response cache to disk
+            try:
+                watchguard.stop()
+            except Exception:
+                pass
             _reset_windows_terminal()  # belt-and-suspenders: restore terminal before exit
             break
 
@@ -772,6 +808,7 @@ def main():
 ║  /exploit         PoC generation from findings (M3)    ║
 ║  /forensics       Git+AST archaeology (M4)             ║
 ║  /memory          Query knowledge graph (M8)           ║
+║  /watchguard      Real-time file watcher (M9)          ║
 ║                                                        ║
 ║ BUILD                                                  ║
 ║  /build <task>     Multi-step project builder           ║
@@ -844,7 +881,12 @@ def main():
             if not engine._model:
                 print("[LeanAI] Loading model...", flush=True)
                 engine._load_model()
-            build_handler.execute_build(task)
+            # M9: pause Watchguard during /build — it writes source
+            # files, and we don't want those writes triggering rescans
+            # mid-build. Watchguard resumes automatically and picks up
+            # the new files on its first batch after the build completes.
+            with watchguard_pause(watchguard):
+                build_handler.execute_build(task)
             sessions.add_exchange(query=user_input, response="[build completed]", tier="build")
 
         elif cmd.startswith("/tdd-desc"):
@@ -889,20 +931,29 @@ def main():
             if not os.path.isdir(path):
                 print(f"Not a directory: {path}")
                 continue
-            print(f"[Brain] Scanning {path}...", flush=True)
-            brain = ProjectBrain(path)
-            result = brain.scan()
-            editor = MultiFileEditor(path)  # update editor too
-            git_intel = GitIntel(path)  # update git too
-            smart_ctx = SmartContext(brain=brain, git_intel=git_intel, session_store=sessions, hdc=hdc, indexer=indexer)
-            completer.update_brain(brain)  # update autocomplete index
-            code_verifier.update_brain(brain)  # update fact-checker
-            agac.update_brain(brain)  # update auto-corrector
+            # M9: pause Watchguard during the full rescan so it doesn't
+            # re-fire on brain's own file reads or sync the graph mid-
+            # index.
+            with watchguard_pause(watchguard):
+                print(f"[Brain] Scanning {path}...", flush=True)
+                brain = ProjectBrain(path)
+                result = brain.scan()
+                editor = MultiFileEditor(path)  # update editor too
+                git_intel = GitIntel(path)  # update git too
+                smart_ctx = SmartContext(brain=brain, git_intel=git_intel, session_store=sessions, hdc=hdc, indexer=indexer)
+                completer.update_brain(brain)  # update autocomplete index
+                code_verifier.update_brain(brain)  # update fact-checker
+                agac.update_brain(brain)  # update auto-corrector
 
-            # Register ReAct tools with brain data
-            react.register_tool("brain", brain.find_function, "Look up function/file in project")
-            if git_intel and git_intel.is_available:
-                react.register_tool("git", lambda q: git_intel.recent_activity(days=7), "Check git history")
+                # M9: hand the freshly-scanned brain to Watchguard too.
+                # If the user has Watchguard running, subsequent file
+                # changes will use this brain object for rescan_file.
+                watchguard.brain = brain
+
+                # Register ReAct tools with brain data
+                react.register_tool("brain", brain.find_function, "Look up function/file in project")
+                if git_intel and git_intel.is_available:
+                    react.register_tool("git", lambda q: git_intel.recent_activity(days=7), "Check git history")
             print(f"[Brain] Scanned {result['files_found']} files in {result['scan_time_ms']}ms")
             print(brain.project_summary())
 
@@ -1413,25 +1464,31 @@ def main():
                     return getattr(r, "text", str(r))
                 model_fn = _sentinel_model
 
-            try:
-                sentinel = SentinelEngine(brain, model_fn=model_fn)
-                findings, stats = sentinel.scan(
-                    target=target,
-                    severity_floor=severity_floor,
-                    use_model=use_model,
-                    verbose=True,
-                )
-                print(format_findings_report(findings, stats, color=True))
+            # M9: pause Watchguard during Sentinel's scan — Sentinel
+            # writes VULN-*.json files to ~/.leanai/vulns/ which (while
+            # already excluded from the filter) can still generate noise
+            # on some OSes, and Sentinel's own file reads should not
+            # trigger rescans.
+            with watchguard_pause(watchguard):
+                try:
+                    sentinel = SentinelEngine(brain, model_fn=model_fn)
+                    findings, stats = sentinel.scan(
+                        target=target,
+                        severity_floor=severity_floor,
+                        use_model=use_model,
+                        verbose=True,
+                    )
+                    print(format_findings_report(findings, stats, color=True))
 
-                # Save to session
-                summary = (
-                    f"Sentinel: {len(findings)} findings "
-                    f"({', '.join(f'{c} {s}' for s, c in stats.by_severity.items())}) "
-                    f"in {stats.time_ms:.0f}ms"
-                )
-                sessions.add_exchange(query=user_input, response=summary, tier="sentinel", confidence=85)
-            except Exception as e:
-                print(f"  {C.DIM}Sentinel error: {e}{C.RESET}")
+                    # Save to session
+                    summary = (
+                        f"Sentinel: {len(findings)} findings "
+                        f"({', '.join(f'{c} {s}' for s, c in stats.by_severity.items())}) "
+                        f"in {stats.time_ms:.0f}ms"
+                    )
+                    sessions.add_exchange(query=user_input, response=summary, tier="sentinel", confidence=85)
+                except Exception as e:
+                    print(f"  {C.DIM}Sentinel error: {e}{C.RESET}")
 
         # ══════════════════════════════════════════════════════════
         # CHAINBREAKER — multi-stage attack simulation (M2)
@@ -2203,6 +2260,81 @@ def main():
             else:
                 print(f"  Unknown /memory subcommand: {sub!r}")
                 print(f"  Try: /memory help")
+
+        # ══════════════════════════════════════════════════════════
+        # WATCHGUARD (M9) — real-time file watcher
+        # ══════════════════════════════════════════════════════════
+
+        elif cmd.startswith("/watchguard") or cmd.startswith("/wg"):
+            rest = (user_input[11:] if cmd.startswith("/watchguard")
+                    else user_input[3:]).strip()
+            sub = (rest.split(None, 1)[0].lower() if rest else "status")
+
+            if sub in ("help", "--help", "-h", "?"):
+                print(f"""
+  {C.BOLD}Watchguard — real-time file watcher (M9){C.RESET}
+
+  Keeps the project brain + MemoryForge graph current as you edit files.
+  Off by default — opt in with {C.CYAN}/watchguard start{C.RESET}.
+
+  {C.CYAN}Usage{C.RESET}
+    /watchguard start      Begin watching project for file changes
+    /watchguard stop       Stop the file watcher
+    /watchguard status     Show state, counters, last error
+    /watchguard help       This screen
+
+  {C.DIM}Short alias: /wg{C.RESET}
+
+  {C.CYAN}Behavior{C.RESET}
+    • Watches *.py / *.js / *.ts / *.jsx / *.tsx files under project root
+    • Ignores .git/, .venv/, __pycache__/, node_modules/, ~/.leanai/
+    • Respects .gitignore patterns
+    • Debounces bursts (2s settle window) into single batches
+    • Auto-pauses during /brain, /build, /sentinel
+    • Summary line per batch printed between prompts
+    • Silent failures — errors logged to ~/.leanai/watchguard.log
+""")
+                continue
+
+            if sub == "start":
+                if watchguard.running:
+                    print(f"  {C.DIM}Watchguard already running.{C.RESET}")
+                    continue
+                if watchguard.brain is None and brain is not None:
+                    watchguard.brain = brain
+                if watchguard.brain is None:
+                    print(f"  {C.DIM}Watchguard needs the project brain. "
+                          f"Run /brain . first.{C.RESET}")
+                    continue
+                ok = watchguard.start()
+                if ok:
+                    print(f"  {C.GREEN}Watchguard started.{C.RESET} "
+                          f"{C.DIM}Save a file to trigger a rescan.{C.RESET}")
+                else:
+                    err = watchguard.status().last_error or "unknown"
+                    print(f"  {C.DIM}Watchguard failed to start: {err}{C.RESET}")
+                    print(f"  {C.DIM}If watchdog is missing: "
+                          f"pip install watchdog{C.RESET}")
+                continue
+
+            if sub == "stop":
+                if not watchguard.running:
+                    print(f"  {C.DIM}Watchguard is not running.{C.RESET}")
+                    continue
+                watchguard.stop()
+                print(f"  {C.DIM}Watchguard stopped.{C.RESET}")
+                continue
+
+            if sub == "status":
+                try:
+                    st = watchguard.status()
+                    print(format_watchguard_status(st, color=True))
+                except Exception as e:
+                    print(f"  {C.DIM}Watchguard status error: {e}{C.RESET}")
+                continue
+
+            print(f"  Unknown /watchguard subcommand: {sub!r}")
+            print(f"  Try: /watchguard help")
 
         # ══════════════════════════════════════════════════════════
         # TRAINING
