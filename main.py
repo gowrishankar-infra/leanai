@@ -2278,10 +2278,12 @@ def main():
   Off by default — opt in with {C.CYAN}/watchguard start{C.RESET}.
 
   {C.CYAN}Usage{C.RESET}
-    /watchguard start      Begin watching project for file changes
-    /watchguard stop       Stop the file watcher
-    /watchguard status     Show state, counters, last error
-    /watchguard help       This screen
+    /watchguard start        Begin watching project for file changes
+    /watchguard stop         Stop the file watcher
+    /watchguard status       Show state, counters, last error
+    /watchguard sentinel on  Vuln-scan changed files on save (M10)
+    /watchguard sentinel off Disable incremental scanning
+    /watchguard help         This screen
 
   {C.DIM}Short alias: /wg{C.RESET}
 
@@ -2293,6 +2295,13 @@ def main():
     • Auto-pauses during /brain, /build, /sentinel
     • Summary line per batch printed between prompts
     • Silent failures — errors logged to ~/.leanai/watchguard.log
+
+  {C.CYAN}Incremental Sentinel (M10){C.RESET}
+    • Off by default — opt in with /watchguard sentinel on
+    • Re-runs Sentinel on ONLY the changed files each batch
+    • New vulns added, fixed vulns resolved out of the graph automatically
+    • Same-file flows only; cross-file taint still needs a full /sentinel
+    • Pure-static (no model) — cheap enough to run on every save
 """)
                 continue
 
@@ -2331,6 +2340,38 @@ def main():
                     print(format_watchguard_status(st, color=True))
                 except Exception as e:
                     print(f"  {C.DIM}Watchguard status error: {e}{C.RESET}")
+                continue
+
+            if sub == "sentinel":
+                # M10: toggle incremental Sentinel (per-file scan on save).
+                arg = ""
+                _parts = rest.split(None, 1)
+                if len(_parts) > 1:
+                    arg = _parts[1].strip().lower()
+                if arg not in ("on", "off"):
+                    cur = "on" if watchguard.incremental_enabled else "off"
+                    print(f"  Usage: /watchguard sentinel on|off   "
+                          f"{C.DIM}(currently {cur}){C.RESET}")
+                    continue
+                if arg == "off":
+                    watchguard.enable_incremental(False)
+                    print(f"  {C.DIM}Incremental Sentinel off.{C.RESET}")
+                    continue
+                # arg == "on"
+                if watchguard.brain is None and brain is not None:
+                    watchguard.brain = brain
+                ok = watchguard.enable_incremental(True)
+                if ok:
+                    print(f"  {C.GREEN}Incremental Sentinel on.{C.RESET} "
+                          f"{C.DIM}Changed files are vuln-scanned on save.{C.RESET}")
+                    print(f"  {C.DIM}Same-file flows only — run /sentinel for "
+                          f"cross-file taint.{C.RESET}")
+                    if not watchguard.running:
+                        print(f"  {C.DIM}Note: takes effect once Watchguard is "
+                              f"running (/watchguard start).{C.RESET}")
+                else:
+                    print(f"  {C.DIM}Could not enable — needs the project brain. "
+                          f"Run /brain . first.{C.RESET}")
                 continue
 
             print(f"  Unknown /watchguard subcommand: {sub!r}")

@@ -88,6 +88,7 @@ class BatchResult:
     relations_delta: int = 0
     elapsed_ms: int = 0
     error: Optional[str] = None
+    incr_summary: str = ""   # M10: incremental Sentinel fragment, e.g. "sec +1/-2"
 
     def summary_line(self) -> str:
         """One-line summary, max 80 chars, suitable for printing."""
@@ -98,6 +99,8 @@ class BatchResult:
             parts.append(f"+{self.findings_delta}f")
         if self.relations_delta:
             parts.append(f"+{self.relations_delta}r")
+        if self.incr_summary:
+            parts.append(self.incr_summary)
         if self.files_failed:
             parts.append(f"{self.files_failed} failed")
         core = " · ".join(parts)
@@ -122,6 +125,12 @@ class WatchguardStatus:
     last_error_at: Optional[float] = None
     queue_depth: int = 0
     pending_output_count: int = 0
+    # M10: incremental Sentinel
+    incremental_enabled: bool = False
+    incr_files_scanned: int = 0
+    incr_findings_added: int = 0
+    incr_findings_resolved: int = 0
+    incr_last_error: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -301,6 +310,7 @@ class Watchguard:
         brain: Any,
         memory_forge: Any,
         *,
+        sentinel: Any = None,
         leanai_home: Optional[str] = None,
         debounce_sec: float = DEFAULT_DEBOUNCE_SEC,
         log_path: Optional[str] = None,
@@ -310,6 +320,13 @@ class Watchguard:
         self.project_path = os.path.abspath(project_path)
         self.brain = brain
         self.memory_forge = memory_forge
+        # M10: optional SentinelEngine for incremental on-save scanning.
+        # Off by default; opt in with enable_incremental(True). If no engine
+        # is injected here, one is built lazily from self.brain on first use.
+        self.sentinel = sentinel
+        self._incremental_enabled = False
+        self._incremental = None        # cached IncrementalSentinel
+        self.incremental_max_files = 25  # batch cap; >this -> skip + suggest /sentinel
 
         if leanai_home is None:
             leanai_home = os.environ.get(
@@ -354,6 +371,52 @@ class Watchguard:
     def paused(self) -> bool:
         return self._paused_flag.is_set()
 
+    @property
+    def incremental_enabled(self) -> bool:
+        """M10: whether incremental Sentinel runs on each batch."""
+        return self._incremental_enabled
+
+    def enable_incremental(self, enabled: bool) -> bool:
+        """Turn incremental Sentinel on/off. Returns the EFFECTIVE state.
+
+        Enabling requires a usable SentinelEngine. If none was injected at
+        construction, one is built lazily from self.brain. If the brain is
+        not available yet, enabling fails and this returns False."""
+        if not enabled:
+            self._incremental_enabled = False
+            return False
+        if self._get_incremental() is None:
+            self._incremental_enabled = False
+            return False
+        self._incremental_enabled = True
+        return True
+
+    def _get_incremental(self):
+        """Return a cached IncrementalSentinel, building it (and a
+        SentinelEngine, if needed) on first use. Returns None if it cannot
+        be constructed (e.g. no brain yet). Never raises."""
+        if self._incremental is not None:
+            return self._incremental
+        try:
+            from core.sentinel_incremental import IncrementalSentinel
+            sentinel = self.sentinel
+            if sentinel is None:
+                if self.brain is None:
+                    return None
+                # Build a model-free engine — incremental never validates with
+                # the model (use_model=False), so model_fn is unnecessary.
+                from core.sentinel import SentinelEngine
+                sentinel = SentinelEngine(self.brain)
+                self.sentinel = sentinel
+            self._incremental = IncrementalSentinel(
+                sentinel, self.memory_forge,
+                max_files=self.incremental_max_files,
+            )
+            return self._incremental
+        except Exception as e:
+            self._record_error(f"incremental init failed: {e}")
+            return None
+
     def status(self) -> WatchguardStatus:
         """Snapshot of current status. Safe to call from any thread."""
         with self._state_lock:
@@ -370,6 +433,11 @@ class Watchguard:
                 last_error_at=self._status.last_error_at,
                 queue_depth=self._event_queue.qsize(),
                 pending_output_count=self._output_queue.qsize(),
+                incremental_enabled=self._incremental_enabled,
+                incr_files_scanned=self._status.incr_files_scanned,
+                incr_findings_added=self._status.incr_findings_added,
+                incr_findings_resolved=self._status.incr_findings_resolved,
+                incr_last_error=self._status.incr_last_error,
             )
         return snap
 
@@ -620,6 +688,34 @@ class Watchguard:
         # Sync MemoryForge once per batch, not once per file —
         # cheaper and gives a clean delta count
         if result.files_processed > 0:
+            # M10: incremental Sentinel runs BEFORE the sync, so the sync
+            # ingests any new/updated VULN-*.json the per-file scans write.
+            # Resolved findings are pruned directly (delete JSON +
+            # forget_finding). Off by default; no-op unless opted in.
+            if self._incremental_enabled:
+                try:
+                    incr = self._get_incremental()
+                    if incr is not None:
+                        ir = incr.process_batch(paths)
+                        with self._state_lock:
+                            self._status.incr_files_scanned += ir.files_scanned
+                            self._status.incr_findings_added += ir.findings_added
+                            self._status.incr_findings_resolved += ir.findings_resolved
+                            if ir.error:
+                                self._status.incr_last_error = ir.error
+                        frag = ir.summary_line()
+                        if frag:
+                            result.incr_summary = frag
+                        if ir.error:
+                            self._logger.warning(
+                                "incremental sentinel: %s", ir.error)
+                except Exception as e:
+                    # Incremental must never break the core batch.
+                    self._logger.warning(
+                        "incremental sentinel crashed: %s", e)
+                    with self._state_lock:
+                        self._status.incr_last_error = str(e)
+
             try:
                 self.memory_forge.set_brain(self.brain)
                 self.memory_forge.sync(verbose=False)
@@ -731,6 +827,26 @@ def format_status(status: WatchguardStatus, color: bool = True) -> str:
 
     lines.append(f"  Queue depth     {status.queue_depth}")
     lines.append(f"  Pending output  {status.pending_output_count}")
+
+    # M10: incremental Sentinel
+    incr_state = f"{GREEN}on{RESET}" if status.incremental_enabled else f"{DIM}off{RESET}"
+    lines.append("")
+    lines.append(f"  Incremental     {incr_state}  {DIM}(per-file scan on save){RESET}")
+    if status.incremental_enabled or status.incr_files_scanned:
+        lines.append(
+            f"                  {DIM}{status.incr_files_scanned} scanned, "
+            f"+{status.incr_findings_added} new, "
+            f"-{status.incr_findings_resolved} resolved{RESET}"
+        )
+        lines.append(
+            f"                  {DIM}note: same-file flows only; "
+            f"run /sentinel for cross-file taint{RESET}"
+        )
+    if status.incr_last_error:
+        err = status.incr_last_error
+        if len(err) > 120:
+            err = err[:120] + "..."
+        lines.append(f"                  {RED}last incr error:{RESET} {DIM}{err}{RESET}")
 
     if status.last_error:
         age = (time.time() - status.last_error_at) if status.last_error_at else 0

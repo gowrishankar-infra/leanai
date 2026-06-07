@@ -1800,6 +1800,63 @@ class MemoryForge:
 
     # ── Maintenance ───────────────────────────────────────────────
 
+    def forget_finding(
+        self, finding_id: str, *, source_tool: str = "sentinel_incremental",
+    ) -> bool:
+        """Prune a resolved finding from the graph.
+
+        Deletes the ``findings`` row, all of its ``relations`` edges
+        (found_in / affects), and records a ``vuln_resolved`` event so the
+        resolution stays in the timeline for SourceForensics. Returns True
+        iff a finding row was actually removed.
+
+        This is the prune path that ``sync()`` deliberately does not provide:
+        ``sync()`` only adds / updates / relinks from disk, so when a
+        ``VULN-*.json`` is deleted (because the vuln was fixed) the row would
+        otherwise linger forever along with its found_in edge. M10's
+        incremental scanner calls this after it deletes the JSON.
+
+        Operates entirely on existing tables — NO schema change, so it does
+        not reintroduce the M8.1 startup-migration interaction.
+        """
+        now = time.time()
+        removed = False
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT id, category, filepath, fingerprint "
+                "FROM findings WHERE finding_id = ?",
+                (finding_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            fid = row["id"]
+
+            # Drop every relation edge touching this finding (found_in /
+            # affects live with src_kind='finding'; the dst sweep is defensive).
+            c.execute(
+                "DELETE FROM relations WHERE src_kind = 'finding' AND src_id = ?",
+                (fid,),
+            )
+            c.execute(
+                "DELETE FROM relations WHERE dst_kind = 'finding' AND dst_id = ?",
+                (fid,),
+            )
+
+            # Record the resolution. finding_id is left NULL on purpose — the
+            # findings row is about to be deleted, so an integer FK snapshot
+            # would dangle; the VULN id lives in the description + fingerprint.
+            # The timestamp keeps the fingerprint unique across re-resolutions.
+            self._add_event(
+                c, "vuln_resolved", source_tool, now,
+                f"{finding_id} resolved: {row['category']} in {row['filepath']}",
+                finding_id=None,
+                fingerprint=f"vuln_resolved:{finding_id}:{row['fingerprint']}:{now}",
+            )
+
+            cur = c.execute("DELETE FROM findings WHERE id = ?", (fid,))
+            removed = cur.rowcount > 0
+        return removed
+
     def reset(self) -> None:
         """Drop and recreate the whole graph. Destructive — user should
         be warned by the caller. Leaves sync_state empty."""
