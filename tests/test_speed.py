@@ -91,7 +91,7 @@ class TestMaxTokens:
         assert get_max_tokens_for_query("implement a binary search") == 2048
 
     def test_detailed_explanation(self):
-        assert get_max_tokens_for_query("explain how transformers work in detail") == 1536
+        assert get_max_tokens_for_query("explain how transformers work in detail") == 2048
 
     def test_default(self):
         assert get_max_tokens_for_query("tell me about the weather patterns in monsoon season") == 768

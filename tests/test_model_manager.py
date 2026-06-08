@@ -85,9 +85,10 @@ class TestModelRegistry:
         s32 = MODEL_REGISTRY["qwen-32b"].size_gb
         assert s7 < s14 < s32
 
-    def test_all_chatml(self):
+    def test_all_known_prompt_formats(self):
+        # Registry now includes a gemma-format model alongside chatml ones.
         for m in MODEL_REGISTRY.values():
-            assert m.prompt_format == "chatml"
+            assert m.prompt_format in ("chatml", "gemma")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -188,10 +189,11 @@ class TestAutoSelection:
     def test_stats_tracking(self):
         mgr = ModelManager()
         mgr.set_mode("fast")
+        before = mgr.stats()["queries_routed"]   # ModelManager persists+reloads stats
         mgr.select_model("query 1")
         mgr.select_model("query 2")
         s = mgr.stats()
-        assert s["queries_routed"] == 2
+        assert s["queries_routed"] == before + 2
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -58,6 +58,8 @@ class TestVectorMemory:
         assert isinstance(results, list)
 
     def test_multiple_stores(self):
+        if self.mem._embedder is None:
+            pytest.skip("embedder unavailable (offline) — needs MiniLM")
         for i in range(5):
             self.mem.store(f"Memory entry number {i} about topic {i}")
         assert self.mem.count() >= 5
@@ -182,6 +184,8 @@ class TestHierarchyV2:
         assert "Aditya" in answer
 
     def test_remember_fact(self):
+        if self.mem.episodic._embedder is None:
+            pytest.skip("embedder unavailable (offline) — needs MiniLM")
         self.mem.remember_fact("LeanAI was built in 2026")
         assert self.mem.episodic.count() > 0
 

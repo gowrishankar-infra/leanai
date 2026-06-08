@@ -36,7 +36,7 @@ class TestChatRequest:
     def test_basic(self):
         r = ChatRequest(message="hello")
         assert r.message == "hello"
-        assert r.max_tokens == 512
+        assert r.max_tokens == 0   # 0 = auto (smart max_tokens); default changed from 512
         assert r.temperature == 0.1
 
     def test_custom_params(self):
