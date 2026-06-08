@@ -80,7 +80,7 @@ class FakeBrain:
     _file_analyses: dict = field(default_factory=dict)
 
     def rescan_file(self, path: str):
-        if self.raise_on and self.raise_on in path:
+        if self.raise_on and self.raise_on in path.replace("\\", "/"):
             raise RuntimeError(f"fake rescan failure for {path}")
         self.rescans.append(path)
 
