@@ -817,6 +817,7 @@ def main():
 ║  /forensics       Git+AST archaeology (M4)             ║
 ║  /memory          Query knowledge graph (M8)           ║
 ║  /watchguard      Real-time file watcher (M9)          ║
+║  /audit           Full security audit + report (M12)   ║
 ║                                                        ║
 ║ BUILD                                                  ║
 ║  /build <task>     Multi-step project builder           ║
@@ -1528,6 +1529,50 @@ def main():
         # brain's call graph to find chains that reach a real "capability"
         # sink (rce / exfil / privesc / secret_read / persistence / destroy).
         # Each chain becomes a CHAIN-YYYY-NNNN persisted to ~/.leanai/chains.
+
+        elif cmd.startswith("/audit"):
+            # M12: one-shot unified audit — Sentinel + ChainBreaker, then a
+            # combined SARIF + Markdown posture report. Usage:
+            #   /audit            -> both formats
+            #   /audit sarif|md   -> one format
+            tokens = user_input.split()
+            fmt = "both"
+            if len(tokens) > 1:
+                t = tokens[1].lower()
+                if t == "sarif":
+                    fmt = "sarif"
+                elif t in ("md", "markdown"):
+                    fmt = "markdown"
+            if brain is None:
+                print(f"  {C.DIM}Audit needs the project brain. Run /brain . first.{C.RESET}")
+                continue
+
+            from core.security_audit import SecurityAudit, format_audit_console
+            _lh = os.environ.get("LEANAI_HOME") or os.path.join(
+                os.path.expanduser("~"), ".leanai")
+            vdir = os.path.join(_lh, "vulns")
+            cdir = os.path.join(_lh, "chains")
+
+            print(f"  {C.DIM}Audit: running Sentinel + ChainBreaker...{C.RESET}", flush=True)
+            with watchguard_pause(watchguard):
+                try:
+                    _sent = SentinelEngine(brain)
+                    _sent.scan(severity_floor=Severity.LOW, use_model=False, verbose=True)
+                    _cbe = ChainBreakerEngine(brain)
+                    _cbe.analyze(severity_floor=Severity.MEDIUM, verbose=True)
+                except Exception as e:
+                    print(f"  {C.DIM}Audit scan failed: {e}{C.RESET}")
+                    continue
+
+            try:
+                audit = SecurityAudit(vdir, cdir).load()
+                print(format_audit_console(audit.summary()))
+                paths = audit.write(os.path.join(_lh, "reports"), fmt=fmt)
+                for p in paths:
+                    print(f"  {C.GREEN}Report written:{C.RESET} {p}")
+            except Exception as e:
+                print(f"  {C.DIM}Audit report failed: {e}{C.RESET}")
+            continue
 
         elif cmd.startswith("/chainbreak") or cmd.startswith("/chain"):
             # Parse args: /chainbreak [--from VULN-ID] [--depth N]
