@@ -1,52 +1,37 @@
 """
-M10 — Incremental Sentinel.
+M10/M11 — Incremental Sentinel.
 
-Re-scans only the files changed in a Watchguard batch, reconciles the result
-against the existing VULN-*.json store + MemoryForge graph, and reports what
-changed. Pure orchestration: it drives ``SentinelEngine.scan(target=...)`` and
-``MemoryForge`` and holds no persistent state of its own, so it is trivially
-unit-testable with mock collaborators.
+M10 re-scanned each changed file on its own and reconciled findings. M11 adds
+an optional CROSS-FILE mode: when a file changes, its 1-hop import neighbours
+(files it imports + files that import it) are pulled into a single multi-file
+scan, so taint paths that cross between those files are detected too — which a
+per-file scan structurally cannot do (a path source->sink that spans two files
+needs both files in the same scan scope).
 
-Why this exists
----------------
-M9 Watchguard keeps the brain + symbol graph fresh on save but deliberately
-does NOT re-run Sentinel (a full scan was judged too costly per-save on a
-4GB-VRAM box). So findings drift: a vuln you just fixed lingers in
-``/memory facts`` and a vuln you just introduced goes unflagged until the next
-manual ``/sentinel``. This module closes that drift — for the changed files
-only.
+Pure orchestration: drives ``SentinelEngine.scan(...)`` and ``MemoryForge`` and
+holds no persistent state. Never raises — exceptions are summarised into
+``IncrementalResult.error`` (mirrors Watchguard's BatchResult contract).
 
-What it catches / what it does not
+Modes
+-----
+* cross_file=False (M10 default): each changed file is scanned alone via
+  ``scan(target=path)``; same-file flows only.
+* cross_file=True  (M11):         the changed files plus their 1-hop import
+  neighbours are scanned together via ``scan(targets=[...])``; cross-file taint
+  within that neighbourhood is caught. Neighbour resolution reuses the brain's
+  import graph (``brain.graph._file_imports``) and is therefore heuristic, like
+  ChainBreaker's reachability — it matches on module/name, not a perfect
+  file-path resolution.
+
+Reconciliation (per scanned scope)
 ----------------------------------
-``SentinelEngine.scan(target=path)`` runs source/sink discovery and taint
-tracing over *only that file*. So:
+* fingerprint in scan but not on disk -> new       (scan persisted its JSON)
+* fingerprint on disk and in scan     -> unchanged
+* fingerprint on disk (for a scoped file) but not in scan -> resolved
+  (delete JSON + memory_forge.forget_finding -> prune row/edge + log event)
 
-  * Direct pattern vulns, file-level vulns, and **same-file** taint flows are
-    detected.
-  * **Cross-file** taint paths (source in file A, sink in file B) are NOT
-    detected here when only one side changes. That remains the job of a full
-    ``/sentinel``.
-
-Incremental never invokes the model (``use_model=False``) — it stays
-pure-static so it is cheap enough to run on every save.
-
-Reconciliation contract
-------------------------
-For each changed file, comparing the set of finding fingerprints stored on
-disk *before* the scan against the set produced *by* the scan:
-
-  * fingerprint in scan but not on disk  -> **new**       (scan already wrote
-    its VULN-*.json; the subsequent ``memory_forge.sync()`` ingests it)
-  * fingerprint on disk and in scan      -> **unchanged** (left as-is)
-  * fingerprint on disk but not in scan  -> **resolved**  (delete its
-    VULN-*.json and call ``memory_forge.forget_finding`` to prune the graph
-    row + edges and log a ``vuln_resolved`` event)
-
-A deleted source file scans to zero findings, so all of its findings resolve —
-which is the correct behavior.
-
-Never raises: the contract mirrors Watchguard's BatchResult — all exceptions
-are caught and summarized into ``IncrementalResult.error``.
+Incremental never invokes the model (use_model=False) — pure-static, cheap
+enough to run on every save.
 """
 
 from __future__ import annotations
@@ -55,34 +40,46 @@ import glob
 import hashlib
 import json
 import os
+from collections import deque
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 def _norm(p: str) -> str:
-    """Forward-slash normalize a path (graph + findings use forward slash)."""
     return str(p).replace("\\", "/") if p else ""
 
 
 def _fingerprint(filepath: str, line: Any, vuln_class: str) -> str:
-    """Reproduce Sentinel's fingerprint exactly: md5(file:line:class)[:10].
-
-    Must stay byte-identical to ``SentinelEngine._persist`` /
-    ``_assign_ids`` or the diff would never match.
-    """
+    """Reproduce Sentinel's fingerprint exactly: md5(file:line:class)[:10]."""
     return hashlib.md5(
         f"{filepath}:{line}:{vuln_class}".encode()
     ).hexdigest()[:10]
 
 
+def _module_candidates(rel_norm: str) -> Set[str]:
+    """Module/name spellings that an import of this file might use.
+
+    'core/x.py' -> {'x', 'core.x', 'core/x', 'x.py'}  (heuristic — mirrors the
+    way ChainBreaker matches imports, since the import graph stores names, not
+    resolved file paths)."""
+    rel_norm = _norm(rel_norm)
+    no_ext = rel_norm[:-3] if rel_norm.endswith(".py") else rel_norm
+    stem = no_ext.rsplit("/", 1)[-1]
+    dotted = no_ext.replace("/", ".")
+    cands = {stem, dotted, no_ext, rel_norm}
+    # also the dotted form minus a leading package segment (e.g. 'x' from 'core.x')
+    if "." in dotted:
+        cands.add(dotted.split(".", 1)[1])
+    return {c for c in cands if c}
+
+
 @dataclass
 class IncrementalResult:
-    """Outcome of reconciling one Watchguard batch. Counters are additive
-    across the files in the batch."""
     files_scanned: int = 0
-    findings_added: int = 0       # new fingerprints (scan persisted them)
-    findings_resolved: int = 0    # fingerprints that disappeared (fixed/file gone)
+    findings_added: int = 0
+    findings_resolved: int = 0
     findings_unchanged: int = 0
+    cross_file_files: int = 0     # extra neighbour files pulled in (M11)
     skipped_over_cap: bool = False
     error: Optional[str] = None
 
@@ -91,97 +88,152 @@ class IncrementalResult:
         return bool(self.findings_added or self.findings_resolved)
 
     def summary_line(self) -> str:
-        """Short fragment for the Watchguard batch summary. Empty string when
-        nothing security-relevant happened, so the caller can omit it."""
         if self.skipped_over_cap:
             return "sentinel skipped (batch too large)"
         if self.error:
-            return f"sentinel error"
+            return "sentinel error"
         if not self.changed:
             return ""
-        return f"sec +{self.findings_added}/-{self.findings_resolved}"
+        base = f"sec +{self.findings_added}/-{self.findings_resolved}"
+        if self.cross_file_files:
+            base += f" (xf+{self.cross_file_files})"
+        return base
 
 
 class IncrementalSentinel:
-    """Drives per-file Sentinel scans + graph reconciliation for a batch.
+    """Per-batch incremental scan + graph reconciliation.
 
     Parameters
     ----------
-    sentinel:
-        A ``SentinelEngine`` (or any object exposing ``scan(target=...)``,
-        ``vuln_dir``, ``project_root``, and ``_resolve_to_rel``).
-    memory_forge:
-        A ``MemoryForge`` exposing ``forget_finding(finding_id)`` and,
-        optionally, ``vuln_dir``.
-    max_files:
-        If a single batch touches more than this many files, the incremental
-        pass is skipped (the caller should suggest a full ``/sentinel``). This
-        keeps a bulk operation like ``git checkout`` from stalling the worker.
-        Set to 0 to disable the cap.
+    sentinel:      SentinelEngine-like (scan, vuln_dir, project_root,
+                   _resolve_to_rel; and .brain for cross-file).
+    memory_forge:  MemoryForge-like (forget_finding; optional vuln_dir).
+    max_files:     scope cap; a larger scope is skipped (suggest /sentinel).
+    cross_file:    enable M11 1-hop neighbour expansion + multi-file scan.
+    max_hops:      neighbour BFS depth when cross_file (default 1).
     """
 
-    def __init__(self, sentinel: Any, memory_forge: Any, *, max_files: int = 25):
+    def __init__(self, sentinel: Any, memory_forge: Any, *,
+                 max_files: int = 25, cross_file: bool = False,
+                 max_hops: int = 1):
         self.sentinel = sentinel
         self.memory_forge = memory_forge
         self.max_files = int(max_files)
+        self.cross_file = bool(cross_file)
+        self.max_hops = max(1, int(max_hops))
 
     # ── public entry ────────────────────────────────────────────────
     def process_batch(self, paths: List[str]) -> IncrementalResult:
-        """Scan the changed files and reconcile findings. Never raises."""
         result = IncrementalResult()
         try:
-            unique: List[str] = []
+            changed: List[str] = []
             seen = set()
             for p in paths:
                 if p and p not in seen:
                     seen.add(p)
-                    unique.append(p)
-
-            if not unique:
+                    changed.append(p)
+            if not changed:
                 return result
 
-            if self.max_files and len(unique) > self.max_files:
-                result.skipped_over_cap = True
-                return result
-
-            for path in unique:
-                self._process_one(path, result)
-        except Exception as e:  # defensive — contract is never-raise
+            if self.cross_file:
+                scope, extra = self._expand_neighbours(changed)
+                result.cross_file_files = extra
+                if self.max_files and len(scope) > self.max_files:
+                    result.skipped_over_cap = True
+                    return result
+                self._process_scope(scope, result)
+            else:
+                if self.max_files and len(changed) > self.max_files:
+                    result.skipped_over_cap = True
+                    return result
+                for path in changed:
+                    self._process_one(path, result)
+        except Exception as e:
             result.error = str(e)
         return result
 
-    # ── per file ─────────────────────────────────────────────────────
+    # ── M10 per-file path (unchanged) ────────────────────────────────
     def _process_one(self, path: str, result: IncrementalResult) -> None:
         rel = _norm(self._resolve_rel(path))
-
-        before = self._fingerprints_on_disk_for(rel)   # {fingerprint: vuln_id}
-
-        # scan(target=...) re-persists current findings with stable ids.
-        findings, _stats = self.sentinel.scan(
-            target=path, use_model=False, verbose=False,
-        )
+        before = self._fingerprints_on_disk_for({rel})
+        findings, _ = self.sentinel.scan(target=path, use_model=False, verbose=False)
         result.files_scanned += 1
+        current = {_fingerprint(f.filepath, f.line, f.vuln_class): f.vuln_id
+                   for f in findings}
+        self._reconcile(before, current, result)
 
-        current: Dict[str, str] = {}
-        for f in findings:
-            fp = _fingerprint(f.filepath, f.line, f.vuln_class)
-            current[fp] = f.vuln_id
+    # ── M11 multi-file scope path ─────────────────────────────────────
+    def _process_scope(self, scope: List[str], result: IncrementalResult) -> None:
+        scope_rels = {_norm(self._resolve_rel(p)) for p in scope}
+        before = self._fingerprints_on_disk_for(scope_rels)
+        findings, _ = self.sentinel.scan(targets=scope, use_model=False, verbose=False)
+        result.files_scanned += len(scope)
+        current = {_fingerprint(f.filepath, f.line, f.vuln_class): f.vuln_id
+                   for f in findings}
+        self._reconcile(before, current, result)
 
+    def _reconcile(self, before: Dict[str, str], current: Dict[str, str],
+                   result: IncrementalResult) -> None:
         for fp in current:
             if fp in before:
                 result.findings_unchanged += 1
             else:
                 result.findings_added += 1
-
         for fp, vuln_id in before.items():
             if fp not in current:
                 self._resolve(vuln_id)
                 result.findings_resolved += 1
 
+    # ── neighbour expansion (M11) ─────────────────────────────────────
+    def _expand_neighbours(self, changed: List[str]) -> Tuple[List[str], int]:
+        """Return (scope_paths, extra_count). scope = changed + 1-hop import
+        neighbours. Falls back to changed-only if no import graph."""
+        graph = getattr(getattr(self.sentinel, "brain", None), "graph", None)
+        file_imports = getattr(graph, "_file_imports", None)
+        if not file_imports:
+            return list(changed), 0
+
+        # Map every known file to its module candidates, once.
+        known = list(file_imports.keys())
+        cand_by_file = {f: _module_candidates(f) for f in known}
+
+        changed_rels = {_norm(self._resolve_rel(p)) for p in changed}
+        scope_rels: Set[str] = set(changed_rels)
+
+        frontier = deque((r, 0) for r in changed_rels)
+        while frontier:
+            cur, depth = frontier.popleft()
+            if depth >= self.max_hops:
+                continue
+            cur_norm = _norm(cur)
+            cur_imports = set()
+            # imports recorded for this file (keys may be rel or abs)
+            for k, v in file_imports.items():
+                if _norm(k) == cur_norm:
+                    cur_imports = set(v)
+                    break
+            cur_cands = _module_candidates(cur_norm)
+
+            for f in known:
+                fn = _norm(f)
+                if fn in scope_rels:
+                    continue
+                f_cands = cand_by_file.get(f, set())
+                f_imports = set(file_imports.get(f, set()))
+                is_dependency = bool(cur_imports & f_cands)   # cur imports f
+                is_dependent = bool(f_imports & cur_cands)    # f imports cur
+                if is_dependency or is_dependent:
+                    scope_rels.add(fn)
+                    frontier.append((fn, depth + 1))
+
+        extra = len(scope_rels) - len(changed_rels)
+        # Preserve original changed paths (for accurate scan targets), append
+        # neighbour rels.
+        scope = list(changed) + [r for r in scope_rels if r not in changed_rels]
+        return scope, max(0, extra)
+
     # ── helpers ──────────────────────────────────────────────────────
     def _resolve_rel(self, path: str) -> str:
-        """Resolve a changed path to the brain-keyed relative path Sentinel
-        uses, so the before/after fingerprint sets share a key space."""
         resolver = getattr(self.sentinel, "_resolve_to_rel", None)
         if callable(resolver):
             try:
@@ -195,13 +247,10 @@ class IncrementalSentinel:
             return path
 
     def _vuln_dir(self) -> Optional[str]:
-        return (
-            getattr(self.sentinel, "vuln_dir", None)
-            or getattr(self.memory_forge, "vuln_dir", None)
-        )
+        return (getattr(self.sentinel, "vuln_dir", None)
+                or getattr(self.memory_forge, "vuln_dir", None))
 
-    def _fingerprints_on_disk_for(self, rel_norm: str) -> Dict[str, str]:
-        """Map {fingerprint: vuln_id} for findings stored for this file."""
+    def _fingerprints_on_disk_for(self, rel_norms: Set[str]) -> Dict[str, str]:
         out: Dict[str, str] = {}
         vuln_dir = self._vuln_dir()
         if not vuln_dir or not os.path.isdir(vuln_dir):
@@ -212,22 +261,16 @@ class IncrementalSentinel:
                     data = json.load(fh)
             except Exception:
                 continue
-            if _norm(data.get("filepath", "")) != rel_norm:
+            if _norm(data.get("filepath", "")) not in rel_norms:
                 continue
-            fp = data.get("fingerprint")
-            if not fp:
-                # Recompute if an older JSON lacks the field.
-                fp = _fingerprint(
-                    data.get("filepath", ""),
-                    data.get("line", 0),
-                    data.get("vuln_class", ""),
-                )
+            fp = data.get("fingerprint") or _fingerprint(
+                data.get("filepath", ""), data.get("line", 0),
+                data.get("vuln_class", ""))
             vid = data.get("vuln_id") or os.path.basename(fpath)[:-5]
             out[fp] = vid
         return out
 
     def _resolve(self, vuln_id: str) -> None:
-        """A finding disappeared: delete its JSON and prune it from the graph."""
         vuln_dir = self._vuln_dir()
         if vuln_dir:
             jp = os.path.join(vuln_dir, vuln_id + ".json")

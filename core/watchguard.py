@@ -325,6 +325,7 @@ class Watchguard:
         # is injected here, one is built lazily from self.brain on first use.
         self.sentinel = sentinel
         self._incremental_enabled = False
+        self._incremental_cross_file = False   # M11: 1-hop cross-file taint
         self._incremental = None        # cached IncrementalSentinel
         self.incremental_max_files = 25  # batch cap; >this -> skip + suggest /sentinel
 
@@ -376,12 +377,26 @@ class Watchguard:
         """M10: whether incremental Sentinel runs on each batch."""
         return self._incremental_enabled
 
-    def enable_incremental(self, enabled: bool) -> bool:
+    @property
+    def incremental_cross_file(self) -> bool:
+        """M11: whether incremental scans pull in 1-hop import neighbours."""
+        return self._incremental_cross_file
+
+    def enable_incremental(self, enabled: bool, *, cross_file=None) -> bool:
         """Turn incremental Sentinel on/off. Returns the EFFECTIVE state.
 
         Enabling requires a usable SentinelEngine. If none was injected at
         construction, one is built lazily from self.brain. If the brain is
-        not available yet, enabling fails and this returns False."""
+        not available yet, enabling fails and this returns False.
+
+        cross_file (M11): None leaves the mode unchanged; True/False sets
+        whether 1-hop import neighbours are scanned together for cross-file
+        taint. Changing it rebuilds the cached scanner."""
+        if cross_file is not None:
+            new_cf = bool(cross_file)
+            if new_cf != self._incremental_cross_file:
+                self._incremental_cross_file = new_cf
+                self._incremental = None   # force rebuild with new mode
         if not enabled:
             self._incremental_enabled = False
             return False
@@ -403,14 +418,13 @@ class Watchguard:
             if sentinel is None:
                 if self.brain is None:
                     return None
-                # Build a model-free engine — incremental never validates with
-                # the model (use_model=False), so model_fn is unnecessary.
                 from core.sentinel import SentinelEngine
                 sentinel = SentinelEngine(self.brain)
                 self.sentinel = sentinel
             self._incremental = IncrementalSentinel(
                 sentinel, self.memory_forge,
                 max_files=self.incremental_max_files,
+                cross_file=self._incremental_cross_file,
             )
             return self._incremental
         except Exception as e:

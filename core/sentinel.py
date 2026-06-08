@@ -257,11 +257,17 @@ class SentinelEngine:
     # ─────────── Public API ───────────
 
     def scan(self, target: str = None, severity_floor: Severity = Severity.LOW,
-             use_model: bool = False, verbose: bool = True) -> Tuple[List[Vulnerability], SentinelStats]:
+             use_model: bool = False, verbose: bool = True,
+             targets: "Optional[List[str]]" = None) -> Tuple[List[Vulnerability], SentinelStats]:
         """
         Run a security scan.
 
         target:         specific filepath to scan, or None for full project
+        targets:        OPTIONAL list of filepaths to scan together as one
+                        scope (M11). When given, sources AND sinks are
+                        discovered across the whole set, so taint paths that
+                        cross between these files are detected — something a
+                        single-file scan cannot do. Overrides `target`.
         severity_floor: minimum severity to report
         use_model:      ask the model to validate high-confidence findings
         verbose:        print progress
@@ -273,7 +279,20 @@ class SentinelEngine:
         findings: List[Vulnerability] = []
 
         # Choose targets
-        if target:
+        if targets:
+            rels = []
+            seen = set()
+            for t in targets:
+                r = self._resolve_to_rel(t)
+                if r in self.brain._file_analyses and r not in seen:
+                    seen.add(r)
+                    rels.append(r)
+            if not rels:
+                if verbose:
+                    print(f"[Sentinel] No targets in brain index")
+                return findings, stats
+            file_analyses = {r: self.brain._file_analyses[r] for r in rels}
+        elif target:
             rel_target = self._resolve_to_rel(target)
             if rel_target not in self.brain._file_analyses:
                 if verbose:

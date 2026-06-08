@@ -655,6 +655,14 @@ def main():
         memory_forge=memory_forge,
     )
 
+    # ── M11: persistent config (~/.leanai/config.json) ────────
+    from core.leanai_config import LeanAIConfig
+    app_config = LeanAIConfig()
+    # Seed Watchguard's cross-file default from config (still off until the
+    # user enables incremental scanning).
+    watchguard._incremental_cross_file = bool(
+        app_config.get("incremental_cross_file", False))
+
     # ── Cascade Inference (7B draft → 32B review) ─────────────
     cascade = CascadeInference(draft_fn=model_fn, review_fn=model_fn, enabled=True)
 
@@ -1431,6 +1439,29 @@ def main():
         elif cmd.startswith("/sentinel") or cmd.startswith("/security"):
             # Parse args: /sentinel [target] [--model] [--severity LEVEL]
             tokens = user_input.split()
+
+            # M11: /sentinel report [sarif|md] — triage + export, no scan.
+            if len(tokens) > 1 and tokens[1].lower() == "report":
+                from core.findings_report import FindingsReport, format_rollup_console
+                fmt = "markdown"
+                if len(tokens) > 2 and tokens[2].lower() == "sarif":
+                    fmt = "sarif"
+                _lh = os.environ.get("LEANAI_HOME") or os.path.join(
+                    os.path.expanduser("~"), ".leanai")
+                vdir = os.path.join(_lh, "vulns")
+                rep = FindingsReport(vdir).load()
+                roll = rep.rollup()
+                if roll.total == 0:
+                    print(f"  {C.DIM}No findings yet — run /sentinel first.{C.RESET}")
+                    continue
+                print(format_rollup_console(roll))
+                try:
+                    path = rep.write(os.path.join(_lh, "reports"), fmt=fmt)
+                    print(f"  {C.GREEN}Report written:{C.RESET} {path}")
+                except Exception as e:
+                    print(f"  {C.DIM}Could not write report: {e}{C.RESET}")
+                continue
+
             target = None
             use_model = False
             severity_floor = Severity.LOW
@@ -2344,14 +2375,36 @@ def main():
 
             if sub == "sentinel":
                 # M10: toggle incremental Sentinel (per-file scan on save).
+                # M11: 'xf on|off' toggles cross-file (1-hop) scanning.
                 arg = ""
-                _parts = rest.split(None, 1)
+                _parts = rest.split(None, 2)
                 if len(_parts) > 1:
                     arg = _parts[1].strip().lower()
+
+                # M11: cross-file sub-toggle
+                if arg in ("xf", "crossfile", "cross-file"):
+                    xf_arg = _parts[2].strip().lower() if len(_parts) > 2 else ""
+                    if xf_arg not in ("on", "off"):
+                        cur = "on" if watchguard.incremental_cross_file else "off"
+                        print(f"  Usage: /watchguard sentinel xf on|off   "
+                              f"{C.DIM}(currently {cur}){C.RESET}")
+                        continue
+                    want = (xf_arg == "on")
+                    watchguard.enable_incremental(
+                        watchguard.incremental_enabled, cross_file=want)
+                    app_config.set("incremental_cross_file", want)
+                    state = "on" if want else "off"
+                    print(f"  {C.GREEN if want else C.DIM}Cross-file taint {state}.{C.RESET}")
+                    if want:
+                        print(f"  {C.DIM}Changed files now scanned with their "
+                              f"1-hop import neighbours.{C.RESET}")
+                    continue
+
                 if arg not in ("on", "off"):
                     cur = "on" if watchguard.incremental_enabled else "off"
-                    print(f"  Usage: /watchguard sentinel on|off   "
-                          f"{C.DIM}(currently {cur}){C.RESET}")
+                    xf = "on" if watchguard.incremental_cross_file else "off"
+                    print(f"  Usage: /watchguard sentinel on|off | xf on|off   "
+                          f"{C.DIM}(incremental {cur}, cross-file {xf}){C.RESET}")
                     continue
                 if arg == "off":
                     watchguard.enable_incremental(False)
@@ -2364,8 +2417,12 @@ def main():
                 if ok:
                     print(f"  {C.GREEN}Incremental Sentinel on.{C.RESET} "
                           f"{C.DIM}Changed files are vuln-scanned on save.{C.RESET}")
-                    print(f"  {C.DIM}Same-file flows only — run /sentinel for "
-                          f"cross-file taint.{C.RESET}")
+                    if watchguard.incremental_cross_file:
+                        print(f"  {C.DIM}Cross-file mode on — 1-hop import "
+                              f"neighbours included.{C.RESET}")
+                    else:
+                        print(f"  {C.DIM}Same-file flows only — enable cross-file "
+                              f"with /watchguard sentinel xf on.{C.RESET}")
                     if not watchguard.running:
                         print(f"  {C.DIM}Note: takes effect once Watchguard is "
                               f"running (/watchguard start).{C.RESET}")
@@ -2491,6 +2548,45 @@ def main():
             print(f"───────────────────────────────────────────────────────")
             print(f"{result.summary()}")
             sessions.add_exchange(query=user_input, response=result.final_text, tier="writing")
+
+        elif cmd.startswith("/config"):
+            parts = user_input.split()
+            if len(parts) == 1:
+                print(f"  {C.CYAN}Config{C.RESET} {C.DIM}({app_config.path}){C.RESET}")
+                for k, v in app_config.all().items():
+                    print(f"    {k} = {v}")
+                print(f"  {C.DIM}Set with: /config <key> <value>{C.RESET}")
+            elif len(parts) >= 3:
+                key = parts[1]
+                raw = parts[2]
+                val = raw
+                if key == "snippet_limit":
+                    try:
+                        val = int(raw)
+                    except ValueError:
+                        print(f"  {C.DIM}snippet_limit needs an integer (200–200000).{C.RESET}")
+                        continue
+                elif key == "incremental_cross_file":
+                    if raw.lower() in ("on", "true", "1", "yes"):
+                        val = True
+                    elif raw.lower() in ("off", "false", "0", "no"):
+                        val = False
+                    else:
+                        print(f"  {C.DIM}incremental_cross_file needs on/off.{C.RESET}")
+                        continue
+                if app_config.set(key, val):
+                    print(f"  {C.GREEN}Set {key} = {val}{C.RESET}")
+                    if key == "incremental_cross_file":
+                        watchguard.enable_incremental(
+                            watchguard.incremental_enabled, cross_file=val)
+                else:
+                    print(f"  {C.DIM}Unknown or invalid setting: {key}{C.RESET}")
+                    print(f"  {C.DIM}Valid keys: "
+                          f"{', '.join(app_config.all().keys())}{C.RESET}")
+            else:
+                print("  Usage: /config                 (show all settings)")
+                print("         /config <key> <value>   (set a setting)")
+            continue
 
         elif cmd.startswith("/report"):
             topic = user_input[7:].strip()
@@ -2979,10 +3075,18 @@ def main():
                                 break
                     if os.path.exists(full):
                         try:
+                            _limit = app_config.get("snippet_limit", 8000)
                             with open(full, 'r', encoding='utf-8', errors='ignore') as _f:
-                                content = _f.read()[:8000]
+                                _raw = _f.read()
+                            content = _raw[:_limit]
                             file_content_block += f"\n\n[FILE CONTENT: {fpath}]\n{content}\n[END FILE]\n"
-                            print(f"  {C.DIM}📄 Reading {fpath} ({len(content)} chars){C.RESET}")
+                            if len(_raw) > _limit:
+                                print(f"  {C.DIM}📄 Reading {fpath} "
+                                      f"({C.RESET}{C.fg(222)}truncated to {_limit} of "
+                                      f"{len(_raw)} chars{C.RESET}{C.DIM}) — "
+                                      f"/config snippet_limit N to change{C.RESET}")
+                            else:
+                                print(f"  {C.DIM}📄 Reading {fpath} ({len(content)} chars){C.RESET}")
                         except Exception:
                             pass
 
