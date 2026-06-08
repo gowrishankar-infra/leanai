@@ -1046,6 +1046,60 @@ Requires `watchdog>=3.0`.
 
 ---
 
+## M10 — Incremental Sentinel (Scan-on-Save)
+
+Watchguard keeps the knowledge graph fresh as you edit, but it doesn't re-run the vulnerability scanner on every save. Incremental Sentinel closes that gap: with `/watchguard sentinel on`, each save triggers a Sentinel scan of **only the changed file**. Newly introduced vulnerabilities are added to the graph immediately, and vulnerabilities you've just fixed are resolved out of it — their finding files deleted, their graph edges pruned, and a `vuln_resolved` event recorded for the forensic timeline.
+
+It's off by default, runs purely statically (no model inference, so it's cheap enough for every save on a 4GB-VRAM box), and is scoped to same-file analysis.
+
+```
+/watchguard sentinel on     # vuln-scan changed files on save
+/watchguard sentinel off
+```
+
+## M11 — Cross-File Taint · Findings Report · Config
+
+Three additions:
+
+**Cross-file taint.** A single-file scan can't see a taint path whose source and sink live in different files. Cross-file mode pulls a changed file's 1-hop import neighbours into a single scan so those paths are caught on save:
+
+```
+/watchguard sentinel xf on  # enable 1-hop cross-file taint
+```
+
+(Same-file flows are always covered; a full `/sentinel` remains the source of truth for arbitrary-distance paths.)
+
+**Findings report.** Turn the finding store into a hand-off artifact — a severity/category rollup plus an export to SARIF 2.1.0 (for CI / code-scanning dashboards) or Markdown:
+
+```
+/sentinel report          # rollup + Markdown report
+/sentinel report sarif    # SARIF 2.1.0 export
+```
+
+Reports are written to `~/.leanai/reports/`. Everything runs offline.
+
+**Config.** A persistent settings file at `~/.leanai/config.json`. The file-injection character limit is now configurable (it used to be hardcoded), and you get a warning when a file is truncated:
+
+```
+/config                          # show all settings
+/config snippet_limit 16000      # raise the file-injection limit
+/config incremental_cross_file on
+```
+
+## M12 — Unified Security Audit
+
+One command runs the full vulnerability scan and exploit-chain analysis together and emits a single combined report:
+
+```
+/audit          # Sentinel + ChainBreaker -> SARIF 2.1.0 + Markdown
+/audit sarif    # SARIF only
+/audit md       # Markdown only
+```
+
+The SARIF carries two runs — `LeanAI Sentinel` and `LeanAI ChainBreaker` — so a code-scanning dashboard ingests both vulnerabilities and exploit chains; each chain is rendered with its entry point as the primary location and the remaining hops as related locations. The Markdown is an executive posture summary followed by chains (highest-signal first) and then vulnerabilities. Reports land in `~/.leanai/reports/audit-<timestamp>.{md,sarif}`. This completes LeanAI's offline security-analysis story: a team that can't send code to a cloud scanner runs one command and gets a standard, shareable audit.
+
+---
+
 
 ## Author
 

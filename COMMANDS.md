@@ -1750,4 +1750,89 @@ Controls DualPipe asymmetric speculative decoding. Loads 7B on GPU (draft) and 2
 
 ---
 
+## Incremental Scanning & Security Audit (M10–M12)
+
+### Incremental Sentinel (M10)
+
+Re-scan only changed files on save (requires Watchguard running and the project brain).
+
+### Commands
+
+```
+/watchguard sentinel on     # vuln-scan changed files on save
+/watchguard sentinel off    # disable
+```
+
+- Off by default. New vulns are added to the graph; fixed vulns are resolved out
+  of it (their `VULN-*.json` deleted, `found_in` edge pruned, a `vuln_resolved`
+  event logged).
+- Pure-static (no model) — cheap enough to run on every save.
+- Same-file flows only (see cross-file below).
+- Above 25 changed files in one batch, incremental is skipped — run `/sentinel`.
+
+### Cross-file taint (M11)
+
+```
+/watchguard sentinel xf on   # scan changed file + its 1-hop import neighbours
+/watchguard sentinel xf off
+```
+
+Catches taint paths whose source and sink live in different files, within the
+1-hop import neighbourhood. Setting persists to `~/.leanai/config.json`. A full
+`/sentinel` remains the source of truth for arbitrary-distance paths.
+
+### Findings report (M11)
+
+```
+/sentinel report          # severity/category rollup + Markdown report
+/sentinel report sarif    # rollup + SARIF 2.1.0 export
+```
+
+Dedups findings and writes to `~/.leanai/reports/sentinel-report-<ts>.{md,sarif}`.
+
+### Config (M11)
+
+```
+/config                          # show all settings + file path
+/config snippet_limit 16000      # file-injection char limit (200–200000, default 8000)
+/config incremental_cross_file on
+```
+
+Settings live in `~/.leanai/config.json` (validated; corrupt file falls back to
+defaults). When an injected file exceeds `snippet_limit`, a truncation warning
+is printed.
+
+### Unified audit (M12)
+
+```
+/audit          # Sentinel + ChainBreaker -> combined SARIF 2.1.0 + Markdown
+/audit sarif    # SARIF only
+/audit md       # Markdown only
+```
+
+Runs a full vulnerability scan and exploit-chain analysis, then writes one
+combined posture report to `~/.leanai/reports/audit-<ts>.{md,sarif}`. The SARIF
+has two runs (Sentinel + ChainBreaker); the Markdown is an executive summary
+followed by chains then vulnerabilities. Runs fully offline.
+
+### Example session
+
+```
+❯❯❯ /brain .
+❯❯❯ /watchguard start
+❯❯❯ /watchguard sentinel on
+❯❯❯ /watchguard sentinel xf on
+# ...edit and save a file that imports another...
+[Watchguard] 1 file rescanned · +1f · sec +1/-0 (xf+1) (120ms)
+❯❯❯ /audit
+  Vulnerabilities: 45
+    severity: CRITICAL 2, HIGH 1, MEDIUM 16, LOW 26
+  Exploit chains:  3
+    capability: rce (2), exfil (1)
+  Report written: ~/.leanai/reports/audit-20260609-101500.md
+  Report written: ~/.leanai/reports/audit-20260609-101500.sarif
+```
+
+---
+
 *For more information, visit the [GitHub repository](https://github.com/gowrishankar-infra/leanai).*
