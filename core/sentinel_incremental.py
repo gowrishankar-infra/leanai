@@ -184,18 +184,30 @@ class IncrementalSentinel:
                 self._resolve(vuln_id)
                 result.findings_resolved += 1
 
-    # ── neighbour expansion (M11) ─────────────────────────────────────
+    # ── neighbour expansion (M11, M11.1 abs/rel-key fix) ──────────────
     def _expand_neighbours(self, changed: List[str]) -> Tuple[List[str], int]:
         """Return (scope_paths, extra_count). scope = changed + 1-hop import
-        neighbours. Falls back to changed-only if no import graph."""
+        neighbours (both dependencies and dependents). Falls back to
+        changed-only if no import graph.
+
+        The brain's ``_file_imports`` may be keyed by ABSOLUTE paths (real
+        ProjectBrain) or relative ones; we normalise every key to a project
+        relative path up front so both lookup directions work regardless.
+        (M11 shipped comparing the changed file's *relative* path against
+        possibly-absolute keys, which silently resolved only dependents —
+        never dependencies. Fixed here.)"""
         graph = getattr(getattr(self.sentinel, "brain", None), "graph", None)
         file_imports = getattr(graph, "_file_imports", None)
         if not file_imports:
             return list(changed), 0
 
-        # Map every known file to its module candidates, once.
-        known = list(file_imports.keys())
-        cand_by_file = {f: _module_candidates(f) for f in known}
+        # Normalise every known file to a project-relative key, once.
+        imports_by_rel: Dict[str, Set[str]] = {}
+        cands_by_rel: Dict[str, Set[str]] = {}
+        for raw_key, imported in file_imports.items():
+            rel = _norm(self._resolve_rel(raw_key))
+            imports_by_rel[rel] = set(imported)
+            cands_by_rel[rel] = _module_candidates(rel)
 
         changed_rels = {_norm(self._resolve_rel(p)) for p in changed}
         scope_rels: Set[str] = set(changed_rels)
@@ -205,30 +217,22 @@ class IncrementalSentinel:
             cur, depth = frontier.popleft()
             if depth >= self.max_hops:
                 continue
-            cur_norm = _norm(cur)
-            cur_imports = set()
-            # imports recorded for this file (keys may be rel or abs)
-            for k, v in file_imports.items():
-                if _norm(k) == cur_norm:
-                    cur_imports = set(v)
-                    break
-            cur_cands = _module_candidates(cur_norm)
+            cur_imports = imports_by_rel.get(cur, set())
+            cur_cands = _module_candidates(cur)
 
-            for f in known:
-                fn = _norm(f)
-                if fn in scope_rels:
+            for rel, f_cands in cands_by_rel.items():
+                if rel in scope_rels:
                     continue
-                f_cands = cand_by_file.get(f, set())
-                f_imports = set(file_imports.get(f, set()))
-                is_dependency = bool(cur_imports & f_cands)   # cur imports f
-                is_dependent = bool(f_imports & cur_cands)    # f imports cur
+                f_imports = imports_by_rel.get(rel, set())
+                is_dependency = bool(cur_imports & f_cands)   # cur imports rel
+                is_dependent = bool(f_imports & cur_cands)    # rel imports cur
                 if is_dependency or is_dependent:
-                    scope_rels.add(fn)
-                    frontier.append((fn, depth + 1))
+                    scope_rels.add(rel)
+                    frontier.append((rel, depth + 1))
 
         extra = len(scope_rels) - len(changed_rels)
-        # Preserve original changed paths (for accurate scan targets), append
-        # neighbour rels.
+        # Preserve original changed paths; append neighbour rels (scan()'s
+        # _resolve_to_rel handles either form).
         scope = list(changed) + [r for r in scope_rels if r not in changed_rels]
         return scope, max(0, extra)
 

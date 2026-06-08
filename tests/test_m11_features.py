@@ -274,5 +274,67 @@ class TestConfig(unittest.TestCase):
         self.assertNotEqual(c.get("snippet_limit"), 999)
 
 
+class _AbsFakeSentinel:
+    """Mimics the REAL brain: _file_imports keyed by ABSOLUTE paths, and
+    _resolve_to_rel converts abs -> project-relative (like SentinelEngine).
+    This is the shape the M11 unit tests originally got wrong."""
+    def __init__(self, vuln_dir, file_imports_abs, project_root="/proj"):
+        self.vuln_dir = vuln_dir
+        self.project_root = project_root
+        brain = _FakeBrain({})            # reuse, then overwrite imports
+        brain.graph._file_imports = file_imports_abs
+        self.brain = brain
+        self.scan_scopes = []
+
+    def _resolve_to_rel(self, target):
+        t = _norm(target)
+        pr = _norm(self.project_root) + "/"
+        if t.startswith(pr):
+            return t[len(pr):]
+        return t
+
+    def scan(self, target=None, targets=None, severity_floor=None,
+             use_model=False, verbose=True):
+        rels = [self._resolve_to_rel(t) for t in (targets or [target])]
+        self.scan_scopes.append(sorted(set(rels)))
+        return [], object()
+
+
+class TestCrossFileAbsKeys(unittest.TestCase):
+    """Regression: real brain keys _file_imports by absolute path. Expansion
+    must resolve BOTH dependency and dependent directions anyway."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.vuln_dir = os.path.join(self.tmp, "vulns")
+        os.makedirs(self.vuln_dir)
+        # b imports a  (b depends on a). Keys are ABSOLUTE.
+        self.imports_abs = {
+            "/proj/core/a.py": set(),
+            "/proj/core/b.py": {"a", "core.a"},
+            "/proj/core/c.py": {"os"},
+        }
+        self.sentinel = _AbsFakeSentinel(self.vuln_dir, self.imports_abs)
+        self.forge = _SpyForge(self.vuln_dir)
+        self.incr = IncrementalSentinel(self.sentinel, self.forge, cross_file=True)
+
+    def test_dependency_direction_resolves_with_abs_keys(self):
+        # b.py changes -> a.py (its dependency) must be pulled in.
+        scope, extra = self.incr._expand_neighbours(["core/b.py"])
+        rels = {_norm(self.sentinel._resolve_to_rel(p)) for p in scope}
+        self.assertIn("core/a.py", rels)       # the bug the diagnostic caught
+        self.assertGreaterEqual(extra, 1)
+
+    def test_dependent_direction_resolves_with_abs_keys(self):
+        # a.py changes -> b.py (which imports a) must be pulled in.
+        scope, _ = self.incr._expand_neighbours(["core/a.py"])
+        rels = {_norm(self.sentinel._resolve_to_rel(p)) for p in scope}
+        self.assertIn("core/b.py", rels)
+
+    def test_unrelated_file_not_pulled_in(self):
+        scope, _ = self.incr._expand_neighbours(["core/a.py"])
+        rels = {_norm(self.sentinel._resolve_to_rel(p)) for p in scope}
+        self.assertNotIn("core/c.py", rels)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
