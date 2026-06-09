@@ -70,6 +70,11 @@ class Vulnerability:
     code_snippet: str
     taint_path: List[str]  # function names traversed (length > 1 = real flow)
     fix_suggestion: str
+    # M-reason: populated only when scan(reason=True) runs the model-primary
+    # analysis pass. Empty otherwise, so all existing behavior is unchanged.
+    model_verdict: str = ""        # exploitable | not_exploitable | uncertain | ""
+    model_reasoning: str = ""      # the model's explanation
+    model_fix: str = ""            # the model's contextual fix recommendation
 
     def to_dict(self):
         d = asdict(self)
@@ -261,7 +266,8 @@ class SentinelEngine:
 
     def scan(self, target: str = None, severity_floor: Severity = Severity.LOW,
              use_model: bool = False, verbose: bool = True,
-             targets: "Optional[List[str]]" = None) -> Tuple[List[Vulnerability], SentinelStats]:
+             targets: "Optional[List[str]]" = None,
+             reason: bool = False) -> Tuple[List[Vulnerability], SentinelStats]:
         """
         Run a security scan.
 
@@ -272,7 +278,16 @@ class SentinelEngine:
                         cross between these files are detected — something a
                         single-file scan cannot do. Overrides `target`.
         severity_floor: minimum severity to report
-        use_model:      ask the model to validate high-confidence findings
+        use_model:      ask the model to lightly validate high-confidence findings
+        reason:         MODEL-PRIMARY analysis (requires model_fn). After the
+                        AST/regex pre-filter surfaces candidates, the model
+                        reasons about each one WITH its caller / callee / taint
+                        context and judges exploitability, attaches an
+                        explanation + contextual fix, and suppresses confident
+                        false positives. This is how Sentinel moves from
+                        "matches patterns I enumerated" to "reasons about what
+                        the code does." Off by default — default behavior is
+                        unchanged.
         verbose:        print progress
 
         Returns (findings, stats)
@@ -353,6 +368,14 @@ class SentinelEngine:
             if verbose:
                 print(f"[Sentinel] Validating {len(findings)} findings with model...")
             findings = self._validate_with_model(findings)
+
+        # Pass 6b (optional): MODEL-PRIMARY reasoning. The model judges each
+        # candidate WITH its caller/callee/taint context, attaches an
+        # explanation + contextual fix, and drops confident false positives.
+        if reason and self.model_fn:
+            if verbose:
+                print(f"[Sentinel] Reasoning over {len(findings)} findings with model...")
+            findings = self._reason_about_findings(findings, verbose=verbose)
 
         # Assign stable IDs and persist
         findings = self._assign_ids(findings)
@@ -727,6 +750,145 @@ class SentinelEngine:
 
         # Drop very low confidence
         return [f for f in validated if f.confidence >= 0.4]
+
+    # ─────────── Model-primary reasoning (M-reason) ───────────
+
+    def _function_for_finding(self, finding):
+        """Find the FunctionInfo + graph node id for a finding, if available."""
+        analysis = self.brain._file_analyses.get(finding.filepath)
+        func = None
+        if analysis:
+            for fn in getattr(analysis, 'functions', []):
+                if getattr(fn, 'qualified_name', None) == finding.function_name:
+                    func = fn
+                    break
+        node_id = f"{finding.filepath}:{finding.function_name}"
+        nodes = getattr(getattr(self.brain, 'graph', None), 'nodes', {}) or {}
+        if node_id not in nodes:
+            node_id = None
+        return func, node_id
+
+    def _build_finding_context(self, finding) -> str:
+        """Assemble caller/callee/taint context so the model reasons about real
+        data flow, not an isolated snippet (the M6/M8 retrieval lever)."""
+        parts = []
+        func, node_id = self._function_for_finding(finding)
+
+        src = ""
+        if func is not None:
+            try:
+                src = self._extract_function_source(self._read_file(finding.filepath), func)
+            except Exception:
+                src = ""
+        if not src:
+            src = finding.code_snippet or ""
+        parts.append(f"FUNCTION ({finding.filepath}:{finding.line}):\n{src[:1500]}")
+
+        g = getattr(self.brain, 'graph', None)
+        if g is not None and node_id:
+            try:
+                callers = [g.nodes[s].name for s in g._reverse_adj.get(node_id, [])
+                           if s in g.nodes][:6]
+                callees = [g.nodes[t].name for t in g._adjacency.get(node_id, [])
+                           if t in g.nodes][:6]
+                if callers:
+                    parts.append("CALLED BY: " + ", ".join(callers))
+                if callees:
+                    parts.append("CALLS: " + ", ".join(callees))
+            except Exception:
+                pass
+
+        if finding.taint_path and len(finding.taint_path) > 1:
+            parts.append("TAINT PATH: " + " -> ".join(finding.taint_path))
+        if finding.source_type:
+            parts.append(f"INPUT SOURCE: {finding.source_type}")
+        if finding.sink_type:
+            parts.append(f"SINK: {finding.sink_type}")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _parse_reasoning(resp: str) -> dict:
+        """Robustly parse VERDICT/CONFIDENCE/REASONING/FIX from a model reply.
+        Tolerant of free-form text; returns a dict with possibly-empty values."""
+        out = {"verdict": "", "confidence": None, "reasoning": "", "fix": ""}
+        if not resp:
+            return out
+        text = resp.strip()
+        low = text.lower()
+        m = re.search(r'verdict\s*[:\-]\s*([a-z_ ]+)', low)
+        verdict_word = m.group(1).strip() if m else low[:20]
+        if 'not' in verdict_word or verdict_word.split()[:1] in (['no'], ['safe'], ['false']):
+            out['verdict'] = 'not_exploitable'
+        elif verdict_word.split()[:1] in (['exploitable'], ['yes'], ['vulnerable'], ['real']):
+            out['verdict'] = 'exploitable'
+        elif verdict_word.startswith('uncert') or verdict_word.split()[:1] in (['maybe'], ['unclear']):
+            out['verdict'] = 'uncertain'
+        elif m:
+            out['verdict'] = 'uncertain'
+        m = re.search(r'confidence\s*[:\-]\s*([0-9]*\.?[0-9]+)', low)
+        if m:
+            try:
+                c = float(m.group(1))
+                out['confidence'] = c / 100.0 if c > 1 else c
+            except ValueError:
+                pass
+        m = re.search(r'reasoning\s*[:\-]\s*(.+?)(?=\n\s*fix\s*[:\-]|\Z)',
+                      text, re.IGNORECASE | re.DOTALL)
+        if m:
+            out['reasoning'] = m.group(1).strip()[:600]
+        m = re.search(r'fix\s*[:\-]\s*(.+)', text, re.IGNORECASE | re.DOTALL)
+        if m:
+            out['fix'] = m.group(1).strip()[:600]
+        return out
+
+    def _reason_about_findings(self, findings, verbose: bool = False):
+        """Model-primary pass: for each candidate, the model judges
+        exploitability WITH context, attaches reasoning + a contextual fix,
+        adjusts confidence, and confident false positives are dropped. The
+        AST/regex layer remains the fast pre-filter that surfaces candidates.
+        Never raises — on any error a finding is kept unchanged."""
+        if not self.model_fn:
+            return findings
+        kept = []
+        for f in findings:
+            try:
+                context = self._build_finding_context(f)
+                prompt = (
+                    "You are a security analyst. A static pre-filter flagged the "
+                    "function below as a possible "
+                    f"{f.vuln_class.replace('_', ' ')}. Using the code AND its "
+                    "context, decide whether it is ACTUALLY exploitable by "
+                    "untrusted input. Reply in EXACTLY this format:\n"
+                    "VERDICT: exploitable | not_exploitable | uncertain\n"
+                    "CONFIDENCE: <0.0-1.0>\n"
+                    "REASONING: <one or two sentences>\n"
+                    "FIX: <concrete remediation>\n\n"
+                    f"{context}\n"
+                )
+                p = self._parse_reasoning(self.model_fn(prompt) or "")
+            except Exception:
+                kept.append(f)
+                continue
+
+            f.model_verdict = p['verdict']
+            f.model_reasoning = p['reasoning']
+            f.model_fix = p['fix']
+            if p['fix']:
+                f.fix_suggestion = p['fix']
+
+            if p['verdict'] == 'exploitable':
+                target = p['confidence'] if p['confidence'] is not None else 0.9
+                f.confidence = min(1.0, max(f.confidence, target))
+            elif p['verdict'] == 'not_exploitable':
+                cap = p['confidence'] if p['confidence'] is not None else 0.25
+                f.confidence = min(f.confidence, cap, 0.25)
+            # 'uncertain' or unparsed → leave confidence unchanged
+
+            kept.append(f)
+
+        # The model is the primary judge: drop what it confidently clears.
+        return [f for f in kept
+                if not (f.model_verdict == 'not_exploitable' and f.confidence < 0.4)]
 
     # ─────────── Helpers ───────────
 
@@ -1122,6 +1284,12 @@ def format_findings_report(findings: List[Vulnerability], stats: SentinelStats, 
                     lines.append(f"    {DIM}{sline}{RESET}")
             if f.taint_path and len(f.taint_path) > 1:
                 lines.append(f"    {DIM}Taint path: {' → '.join(f.taint_path)}{RESET}")
+            if getattr(f, 'model_verdict', ''):
+                vc = {'exploitable': RED, 'not_exploitable': GREEN,
+                      'uncertain': YELLOW}.get(f.model_verdict, '')
+                lines.append(f"    {vc}Model verdict: {f.model_verdict}{RESET}")
+                if f.model_reasoning:
+                    lines.append(f"    {DIM}Why: {f.model_reasoning}{RESET}")
             lines.append(f"    {GREEN}Fix:{RESET} {f.fix_suggestion}")
             lines.append(f"    {DIM}Confidence: {f.confidence:.0%}{RESET}")
         lines.append("")

@@ -1438,7 +1438,10 @@ def main():
         # ══════════════════════════════════════════════════════════
 
         elif cmd.startswith("/sentinel") or cmd.startswith("/security"):
-            # Parse args: /sentinel [target] [--model] [--severity LEVEL]
+            # Parse args: /sentinel [target] [--model] [--reason] [--severity LEVEL]
+            #   --model   light model validation of high-confidence findings
+            #   --reason  model-primary: judge exploitability with caller/taint
+            #             context, attach reasoning + fix, drop false positives
             tokens = user_input.split()
 
             # M11: /sentinel report [sarif|md] — triage + export, no scan.
@@ -1465,6 +1468,7 @@ def main():
 
             target = None
             use_model = False
+            reason = False
             severity_floor = Severity.LOW
 
             i = 1
@@ -1472,6 +1476,8 @@ def main():
                 tok = tokens[i]
                 if tok == "--model":
                     use_model = True
+                elif tok == "--reason":
+                    reason = True          # model-primary exploitability reasoning
                 elif tok == "--severity" and i + 1 < len(tokens):
                     sev = tokens[i + 1].upper()
                     if sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
@@ -1485,13 +1491,18 @@ def main():
                 print(f"  {C.DIM}Sentinel needs the project brain. Run /brain . first.{C.RESET}")
                 continue
 
-            print(f"  {C.DIM}Sentinel: AST-grounded security analysis...{C.RESET}", flush=True)
+            if reason:
+                print(f"  {C.DIM}Sentinel: AST pre-filter + model reasoning...{C.RESET}", flush=True)
+            else:
+                print(f"  {C.DIM}Sentinel: AST-grounded security analysis...{C.RESET}", flush=True)
 
-            # Build a model_fn wrapper if --model requested
+            # Build a model_fn wrapper if --model or --reason requested. The
+            # reasoning pass needs more room than the light validator.
             model_fn = None
-            if use_model:
+            if use_model or reason:
+                _max_tok = 256 if reason else 128
                 def _sentinel_model(prompt: str) -> str:
-                    cfg = GenerationConfig(max_tokens=128, temperature=0.1)
+                    cfg = GenerationConfig(max_tokens=_max_tok, temperature=0.1)
                     r = engine.generate(prompt, config=cfg)
                     return getattr(r, "text", str(r))
                 model_fn = _sentinel_model
@@ -1508,6 +1519,7 @@ def main():
                         target=target,
                         severity_floor=severity_floor,
                         use_model=use_model,
+                        reason=reason,
                         verbose=True,
                     )
                     print(format_findings_report(findings, stats, color=True))
