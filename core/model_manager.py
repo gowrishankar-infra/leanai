@@ -35,6 +35,23 @@ def get_models_dir():
     return get_leanai_home() / "models"
 
 
+def _guess_format(filename: str) -> str:
+    """Best-guess prompt format from a filename (mirrors the engine's
+    auto-detection). The engine re-detects on load, so this is for display."""
+    name = filename.lower()
+    if "gemma" in name:
+        return "gemma"
+    if "qwen" in name:
+        return "chatml"
+    if "phi" in name:
+        return "phi3"
+    if "llama" in name:
+        return "llama3"
+    if "mistral" in name or "nemo" in name:
+        return "chatml"
+    return "chatml"
+
+
 # ── Model Registry ────────────────────────────────────────────────
 
 @dataclass
@@ -49,6 +66,7 @@ class ModelInfo:
     speed_label: str           # "fast", "medium", "slow"
     prompt_format: str         # "chatml", "phi3", etc.
     description: str = ""
+    is_local: bool = False     # auto-discovered local .gguf (not curated registry)
 
     @property
     def full_path(self) -> str:
@@ -223,6 +241,40 @@ MODEL_REGISTRY: Dict[str, ModelInfo] = {
         prompt_format="gemma",
         description="Google's best local model. MoE 4B active = very fast. Rock solid under quantization.",
     ),
+    # ── User-added local models (exact filenames present in ~/.leanai/models) ──
+    "qwen-coder-josie": ModelInfo(
+        name="Qwen2.5 Coder 7B (Josiefied, uncensored)",
+        filename="Josiefied-Qwen2.5-Coder-7B-Instruct-v1.Q6_K.gguf",
+        repo_id="Josiefied/Qwen2.5-Coder-7B-Instruct-v1-GGUF",
+        size_gb=6.3,
+        ram_needed_gb=8,
+        quality_score=72,
+        speed_label="fast",
+        prompt_format="chatml",
+        description="Code-specialized 7B, uncensored community build (Q6). Good for C/Python.",
+    ),
+    "llama-8b": ModelInfo(
+        name="Meta Llama 3.1 8B Instruct",
+        filename="Meta-Llama-3.1-8B-Instruct.Q6_K.gguf",
+        repo_id="bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+        size_gb=6.6,
+        ram_needed_gb=8,
+        quality_score=74,
+        speed_label="fast",
+        prompt_format="llama3",
+        description="General-purpose 8B (Q6). Broader knowledge than the coder models.",
+    ),
+    "mistral-nemo": ModelInfo(
+        name="Mistral Nemo 12B Instruct",
+        filename="mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-12B.Q6_K.gguf",
+        repo_id="bartowski/Mistral-Nemo-Instruct-2407-GGUF",
+        size_gb=9.6,
+        ram_needed_gb=12,
+        quality_score=80,
+        speed_label="medium",
+        prompt_format="chatml",
+        description="12B general model (Q6). Higher quality, heavier/slower on 4GB VRAM.",
+    ),
 }
 
 
@@ -349,18 +401,84 @@ class ModelManager:
             "quality_count": 0,
         }
         self._load_state()
+        # Surface any .gguf the user dropped in that no registry entry covers,
+        # so EVERY local model is listable + switchable, not just curated ones.
+        self._discover_local_models()
+
+    def _discover_local_models(self) -> None:
+        """Scan the models folder; add any unregistered .gguf as a switchable
+        entry (filename-derived key, auto-detected prompt format). Curated
+        registry entries keep their nice names; loose files still show up."""
+        models_dir = get_models_dir()
+        if not models_dir.exists():
+            return
+        # Filenames already covered by a registry entry (so we don't double-list).
+        covered = set()
+        for m in MODEL_REGISTRY.values():
+            covered.add(m.filename.lower())
+            if m.is_downloaded:
+                try:
+                    covered.add(os.path.basename(self.get_model_path_for(m)).lower())
+                except Exception:
+                    pass
+        for f in sorted(models_dir.rglob("*.gguf")):
+            if f.name.lower() in covered:
+                continue
+            key = self._local_key(f.name)
+            if key in self.models:
+                continue
+            try:
+                size_gb = f.stat().st_size / (1024 ** 3)
+            except Exception:
+                size_gb = 0.0
+            self.models[key] = ModelInfo(
+                name=f.name,
+                filename=f.name,
+                repo_id="(local file)",
+                size_gb=round(size_gb, 1),
+                ram_needed_gb=round(size_gb * 1.3, 1),
+                quality_score=0,
+                speed_label="local",
+                prompt_format=_guess_format(f.name),
+                description="Auto-detected local file.",
+                is_local=True,
+            )
+
+    @staticmethod
+    def _local_key(filename: str) -> str:
+        """Short, typeable key from a filename, e.g.
+        'Meta-Llama-3.1-8B-Instruct.Q6_K.gguf' -> 'local-meta-llama-3.1-8b'."""
+        stem = filename.lower()
+        for suf in (".gguf", ".q6_k", ".q4_k_m", ".q5_k_m", ".q8_0", "-instruct"):
+            stem = stem.replace(suf, "")
+        stem = stem.replace("_", "-").replace(" ", "-").strip("-.")
+        parts = [p for p in stem.split("-") if p][:4]
+        return "local-" + "-".join(parts) if parts else "local-model"
+
+    def get_model_path_for(self, model: "ModelInfo") -> str:
+        """Resolve a ModelInfo to an on-disk path (exact, else its full_path)."""
+        return model.full_path
 
     # ── Model listing ─────────────────────────────────────────────
 
     def list_models(self) -> str:
         """List all available models with download status."""
         lines = ["Available Models:", ""]
+        local = []
         for key, model in self.models.items():
+            if getattr(model, "is_local", False):
+                local.append((key, model))
+                continue
             status = "DOWNLOADED" if model.is_downloaded else f"not downloaded ({model.size_gb:.1f} GB)"
             lines.append(
                 f"  {key:12s}  {model.name:30s}  {model.speed_label:6s}  "
                 f"quality:{model.quality_score}%  {status}"
             )
+        if local:
+            lines.append("")
+            lines.append("Local files (auto-detected in your models folder):")
+            for key, model in local:
+                lines.append(f"  {key:28s}  {model.name}  ({model.prompt_format})")
         lines.append(f"\nCurrent mode: {self._mode}")
         downloaded = [k for k, m in self.models.items() if m.is_downloaded]
         lines.append(f"Downloaded: {', '.join(downloaded) or 'none'}")

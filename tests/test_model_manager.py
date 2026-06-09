@@ -86,9 +86,10 @@ class TestModelRegistry:
         assert s7 < s14 < s32
 
     def test_all_known_prompt_formats(self):
-        # Registry now includes a gemma-format model alongside chatml ones.
+        # Registry now spans chatml/gemma/llama3 (and phi3 is supported too).
+        valid = {"chatml", "gemma", "llama3", "phi3"}
         for m in MODEL_REGISTRY.values():
-            assert m.prompt_format in ("chatml", "gemma")
+            assert m.prompt_format in valid
 
 
 # ══════════════════════════════════════════════════════════════════
