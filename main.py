@@ -2715,9 +2715,15 @@ def main():
                     continue
                 print(f"Switching to {model_info.name}...")
                 try:
-                    engine.switch_model(model_path)
-                    current_model_key = model_key
-                    print(f"Loaded {model_info.name} ({model_info.speed_label}, quality: {model_info.quality_score}%)")
+                    ok = engine.switch_model(model_path)
+                    if ok:
+                        current_model_key = model_key
+                        print(f"Loaded {model_info.name} ({model_info.speed_label}, quality: {model_info.quality_score}%)")
+                    else:
+                        print(f"  {C.RED}Failed to load {model_info.name}.{C.RESET} "
+                              f"The model did not load (often a bad/incompatible "
+                              f"chat template or corrupt GGUF). Active model unchanged — "
+                              f"try a different model.")
                 except Exception as e:
                     print(f"Error loading model: {e}")
 

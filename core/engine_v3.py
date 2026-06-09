@@ -546,28 +546,43 @@ class LeanAIEngineV3:
     def training_status(self):
         return self.trainer.status()
 
-    def switch_model(self, new_model_path: str):
-        """Switch to a different model. Properly unloads old model first."""
+    def switch_model(self, new_model_path: str) -> bool:
+        """Switch to a different model. Properly unloads old model first.
+        Returns True only if the new model actually loaded; False if the load
+        failed (e.g. bad GGUF / chat template). On failure, the previous
+        model's settings are restored so the engine falls back to the last
+        working model instead of being left pointing at the broken one."""
         if new_model_path == self.model_path and self._model is not None:
-            return  # already loaded
+            return True  # already loaded
+
+        # Remember the previous (working) state to restore on failure.
+        prev = (self.model_path, self.model_name, self.prompt_format, self.n_threads)
 
         # Unload current model
         if self._model is not None:
             del self._model
             self._model = None
 
-        # Reset state
+        # Reset state to the candidate
         self._model_loaded = False
         self.model_path = new_model_path
         self.model_name = Path(new_model_path).name
         self.prompt_format = _detect_prompt_format(new_model_path)
         self.n_threads = _optimal_threads(new_model_path)
 
-        # Save as active model so it persists across restarts
-        _save_active_model(new_model_path)
-
         # Load new model immediately
         self._load_model()
+
+        if self._model is not None:
+            # Success — persist as active so it sticks across restarts.
+            _save_active_model(new_model_path)
+            return True
+
+        # Failure — restore previous settings (it'll lazy-reload the last
+        # working model on the next request). Do NOT touch active_model.txt.
+        self.model_path, self.model_name, self.prompt_format, self.n_threads = prev
+        self._model_loaded = False
+        return False
 
     # ── Private ────────────────────────────────────────────────────────
 
