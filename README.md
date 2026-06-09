@@ -1100,6 +1100,44 @@ The SARIF carries two runs — `LeanAI Sentinel` and `LeanAI ChainBreaker` — s
 
 ---
 
+## Detection fixes & model-primary reasoning
+
+After M12, a deep end-to-end pass (driven by the `tools/selfcheck.py` harness running every subsystem against the real project) surfaced and fixed real issues, and added a model-reasoning layer.
+
+**Detection correctness.** Sentinel's string-stripper used to blank string *delimiters* before matching, which silently made the SQL-injection sink patterns un-matchable — SQLi detection was effectively dead. Fixed by preserving quote delimiters while blanking string interiors (the same fix applied in ChainBreaker, which had been discarding every SQLi finding as "stale"). SQL injection is now detected. Taint-source recognition was also broadened beyond Flask to **Django** (`request.GET/POST`), **FastAPI/Starlette** (`query_params`, `headers`, `body`), and **Tornado** (`self.get_argument`).
+
+**CWE mapping.** Every finding now carries a standard CWE id (e.g. `CWE-89`, `CWE-78`), shown in the report and exported in SARIF.
+
+**`skip_tests` (default on for `/sentinel` and `/audit`).** Test and fixture files are no longer reported as production vulnerabilities — they're not attack surface, and the noise inflated severity counts. Use `--include-tests` to scan them anyway.
+
+**Model-primary reasoning — `/sentinel --reason`.** The AST/regex layer stays the fast pre-filter; with `--reason`, each candidate is sent to the model **with its real context** — the function plus its callers/callees (from the M8 graph), the taint path, and the input source/sink. The model returns a verdict (`exploitable` / `not_exploitable` / `uncertain`), confidence, reasoning, and a contextual fix; confident false positives are dropped. This moves Sentinel from "matches patterns I enumerated" to "reasons about what the code does."
+
+Because local model reasoning is costly (~2 min/finding on a CPU-bound 27B), the pass is **gated**: only MEDIUM+ findings, capped (highest-severity first). `--all` runs the exhaustive pass; scanning a single file (`/sentinel core/x.py --reason`) is the fast way to deep-dive.
+
+```
+/sentinel --reason                 # AST pre-filter + gated model exploitability reasoning
+/sentinel core/memory_forge.py --reason   # deep-dive one file (fast)
+/sentinel --reason --all           # reason over everything (slow)
+/sentinel --include-tests          # also scan test files
+```
+
+**Escalation hook.** `SentinelEngine(deep_reasoner_fn=…)` can escalate only the `uncertain` findings — sending just that finding's snippet (never the codebase) to a stronger reasoner you wire in. Default off (fully local).
+
+## Reusable capability modules
+
+Three subsystem-agnostic modules, each tested:
+- **`core/code_context.py`** — structural context retrieval (a function plus its callers/callees/imports from the dependency graph) and a no-embedder relevance reranker, so any feature can feed the model the *right* code.
+- **`core/verify_fix.py`** — a generalized compile + lint + self-correct loop for any code-producing output (execution opt-in).
+- **`core/abstention.py`** — self-consistency voting and calibrated abstention, so the tool can say "unsure → review" instead of bluffing.
+
+## Tools
+
+- **`tools/selfcheck.py`** — end-to-end health & behavior report. Runs every subsystem against a copy of a target project (read-only, throwaway home), writes `selfcheck_report.json`. `--with-model` also drives the real model through the reasoning path.
+- **`tools/export_security_trainset.py`** — exports findings into an instruction-tuning JSONL for fine-tuning a security-specialized model (see `SECURITY_TRAINING.md`).
+- **`tools/diagnose_crossfile.py`** — read-only inspector for the cross-file import-neighbour resolution.
+
+---
+
 
 ## Author
 
