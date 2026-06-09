@@ -556,7 +556,9 @@ class LeanAIEngineV3:
             return True  # already loaded
 
         # Remember the previous (working) state to restore on failure.
-        prev = (self.model_path, self.model_name, self.prompt_format, self.n_threads)
+        # NOTE: model_name is derived from model_path on use and isn't a
+        # reliably-initialized attribute, so we don't save/restore it.
+        prev = (self.model_path, self.prompt_format, self.n_threads)
 
         # Unload current model
         if self._model is not None:
@@ -580,7 +582,8 @@ class LeanAIEngineV3:
 
         # Failure — restore previous settings (it'll lazy-reload the last
         # working model on the next request). Do NOT touch active_model.txt.
-        self.model_path, self.model_name, self.prompt_format, self.n_threads = prev
+        self.model_path, self.prompt_format, self.n_threads = prev
+        self.model_name = Path(self.model_path).name
         self._model_loaded = False
         return False
 
