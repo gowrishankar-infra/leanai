@@ -96,9 +96,12 @@ class SentinelStats:
 # Source patterns — code patterns that take in external/untrusted data
 SOURCE_PATTERNS = {
     'http_input': [
-        r'\brequest\.(?:args|form|json|values|data|files|cookies)\b',
+        r'\brequest\.(?:args|form|json|values|data|files|cookies|headers|body|params|query_params|path_params)\b',
+        r'\brequest\.(?:GET|POST|FILES|META|COOKIES)\b',          # Django (uppercase)
         r'\bawait\s+request\.(?:json|form|body)\(\)',
         r'\bbody\s*[:=]\s*await',
+        r'\.get_json\s*\(',                                       # Flask request.get_json()
+        r'\bself\.get_(?:query_|body_)?argument\s*\(',            # Tornado handlers
     ],
     'cli_arg': [
         r'\bargparse\b',
