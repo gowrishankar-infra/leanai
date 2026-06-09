@@ -75,6 +75,8 @@ class Vulnerability:
     model_verdict: str = ""        # exploitable | not_exploitable | uncertain | ""
     model_reasoning: str = ""      # the model's explanation
     model_fix: str = ""            # the model's contextual fix recommendation
+    cwe: str = ""                  # CWE id, e.g. "CWE-89" (set from CWE_MAP)
+    escalated: bool = False        # judged by the deep (escalation) reasoner
 
     def to_dict(self):
         d = asdict(self)
@@ -211,6 +213,23 @@ DEFAULT_SEVERITY = {
     'missing_auth': Severity.HIGH,
 }
 
+# CWE identifiers per vuln class — gives findings standard taxonomy IDs for
+# SARIF / dashboards / compliance (the cheap, compounding knowledge lever).
+CWE_MAP = {
+    'sql_injection': 'CWE-89',
+    'command_injection': 'CWE-78',
+    'unsafe_deserialization': 'CWE-502',
+    'path_traversal': 'CWE-22',
+    'ssrf': 'CWE-918',
+    'xss': 'CWE-79',
+    'hardcoded_secret': 'CWE-798',
+    'open_redirect': 'CWE-601',
+    'weak_crypto': 'CWE-327',
+    'race_condition': 'CWE-362',
+    'insecure_temp': 'CWE-377',
+    'missing_auth': 'CWE-306',
+}
+
 FIX_SUGGESTIONS = {
     'sql_injection': "Use parameterized queries: cursor.execute('SELECT ... WHERE id = %s', (value,))",
     'command_injection': "Avoid eval/exec. Use subprocess with shell=False and a list of args. Validate inputs against allowlist.",
@@ -243,16 +262,24 @@ class SentinelEngine:
     12+ vulnerability classes.
     """
 
-    def __init__(self, brain, project_root: str = None, model_fn=None, vuln_dir: str = None):
+    def __init__(self, brain, project_root: str = None, model_fn=None, vuln_dir: str = None,
+                 deep_reasoner_fn=None):
         """
-        brain:        ProjectBrain instance (must be scanned first)
-        project_root: project root path (defaults to brain.config.project_path)
-        model_fn:     optional callable(prompt: str) -> str for model validation
-        vuln_dir:     directory to persist vulnerability findings
+        brain:           ProjectBrain instance (must be scanned first)
+        project_root:    project root path (defaults to brain.config.project_path)
+        model_fn:        optional callable(prompt: str) -> str for model validation/reasoning
+        vuln_dir:        directory to persist vulnerability findings
+        deep_reasoner_fn: OPTIONAL callable(prompt: str) -> str that escalates the
+                         HARD cases (local model said 'uncertain') to a stronger
+                         reasoner. Receives ONLY the single finding's snippet +
+                         context, never the whole codebase — so the offline
+                         default holds and escalation is a per-finding, opt-in
+                         privacy trade. None (default) = no escalation, fully local.
         """
         self.brain = brain
         self.project_root = project_root or brain.config.project_path
         self.model_fn = model_fn
+        self.deep_reasoner_fn = deep_reasoner_fn
         self.vuln_dir = vuln_dir or os.path.join(
             os.environ.get('LEANAI_HOME', os.path.join(str(Path.home()), '.leanai')),
             'vulns'
@@ -376,6 +403,11 @@ class SentinelEngine:
             if verbose:
                 print(f"[Sentinel] Reasoning over {len(findings)} findings with model...")
             findings = self._reason_about_findings(findings, verbose=verbose)
+
+        # Attach CWE ids (standard taxonomy) to every finding.
+        for f in findings:
+            if not f.cwe:
+                f.cwe = CWE_MAP.get(f.vuln_class, "")
 
         # Assign stable IDs and persist
         findings = self._assign_ids(findings)
@@ -870,6 +902,18 @@ class SentinelEngine:
                 kept.append(f)
                 continue
 
+            # Escalation (opt-in): if the local model is uncertain and a deep
+            # reasoner is wired, send THIS finding's snippet/context to it.
+            if (p['verdict'] in ('', 'uncertain')
+                    and self.deep_reasoner_fn is not None):
+                try:
+                    dp = self._parse_reasoning(self.deep_reasoner_fn(prompt) or "")
+                    if dp['verdict']:
+                        p = dp
+                        f.escalated = True
+                except Exception:
+                    pass
+
             f.model_verdict = p['verdict']
             f.model_reasoning = p['reasoning']
             f.model_fix = p['fix']
@@ -1276,7 +1320,8 @@ def format_findings_report(findings: List[Vulnerability], stats: SentinelStats, 
         lines.append(f"{c}{BOLD}── {sev} ({len(by_sev[sev])}) ──{RESET}")
         for f in by_sev[sev]:
             lines.append("")
-            lines.append(f"  {c}[{f.vuln_id}] {f.vuln_class.replace('_', ' ').title()}{RESET}")
+            cwe_tag = f"  {DIM}[{f.cwe}]{RESET}" if getattr(f, 'cwe', '') else ""
+            lines.append(f"  {c}[{f.vuln_id}] {f.vuln_class.replace('_', ' ').title()}{RESET}{cwe_tag}")
             lines.append(f"    {DIM}{f.filepath}:{f.line}  in  {f.function_name}{RESET}")
             lines.append(f"    {f.description}")
             if f.code_snippet:
@@ -1287,7 +1332,8 @@ def format_findings_report(findings: List[Vulnerability], stats: SentinelStats, 
             if getattr(f, 'model_verdict', ''):
                 vc = {'exploitable': RED, 'not_exploitable': GREEN,
                       'uncertain': YELLOW}.get(f.model_verdict, '')
-                lines.append(f"    {vc}Model verdict: {f.model_verdict}{RESET}")
+                esc = " (escalated)" if getattr(f, 'escalated', False) else ""
+                lines.append(f"    {vc}Model verdict: {f.model_verdict}{esc}{RESET}")
                 if f.model_reasoning:
                     lines.append(f"    {DIM}Why: {f.model_reasoning}{RESET}")
             lines.append(f"    {GREEN}Fix:{RESET} {f.fix_suggestion}")

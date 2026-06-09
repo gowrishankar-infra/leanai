@@ -57,6 +57,7 @@ class TestParseReasoning(unittest.TestCase):
 class TestReasoningPass(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda v=os.environ.get("LEANAI_HOME"): (os.environ.__setitem__("LEANAI_HOME", v) if v is not None else os.environ.pop("LEANAI_HOME", None)))
         os.environ["LEANAI_HOME"] = os.path.join(self.tmp, "home")
         self.proj = os.path.join(self.tmp, "proj")
         os.makedirs(self.proj)
