@@ -651,13 +651,19 @@ class ModelManager:
                 return self._pick_fastest(downloaded)
 
     def _pick_fastest(self, downloaded: List[str]) -> str:
-        """Pick the fastest (smallest) downloaded model."""
-        by_speed = sorted(downloaded, key=lambda k: self.models[k].size_gb)
+        """Pick the fastest (smallest) downloaded model. Prefer curated
+        registry models; auto-discovered local files are selectable by name
+        but should NOT silently become the auto-routing default."""
+        curated = [k for k in downloaded if not getattr(self.models[k], "is_local", False)]
+        pool = curated or downloaded
+        by_speed = sorted(pool, key=lambda k: self.models[k].size_gb)
         return by_speed[0]
 
     def _pick_best_quality(self, downloaded: List[str]) -> str:
-        """Pick the highest quality downloaded model."""
-        by_quality = sorted(downloaded, key=lambda k: self.models[k].quality_score, reverse=True)
+        """Pick the highest quality downloaded model (curated first)."""
+        curated = [k for k in downloaded if not getattr(self.models[k], "is_local", False)]
+        pool = curated or downloaded
+        by_quality = sorted(pool, key=lambda k: self.models[k].quality_score, reverse=True)
         return by_quality[0]
 
     # ── Model path resolution ─────────────────────────────────────
