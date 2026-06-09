@@ -143,6 +143,19 @@ class AgenticPipeline:
                 # On Windows, posix=False keeps backslashes in paths from being
                 # treated as escape characters.
                 args = shlex.split(command, posix=(os.name != 'nt'))
+                if os.name == 'nt':
+                    # posix=False preserves backslashes (good for Windows paths)
+                    # but also leaves surrounding quotes on tokens, which breaks
+                    # commands like  python -c "print(42)"  (Python would receive
+                    # the literal string '"print(42)"' and print nothing). Strip
+                    # one layer of matched outer quotes from each token.
+                    stripped = []
+                    for a in args:
+                        if len(a) >= 2 and a[0] == a[-1] and a[0] in ('"', "'"):
+                            stripped.append(a[1:-1])
+                        else:
+                            stripped.append(a)
+                    args = stripped
             else:
                 args = list(command)
 

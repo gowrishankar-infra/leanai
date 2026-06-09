@@ -1145,7 +1145,7 @@ class ChainBreakerEngine:
             # Triple-quoted
             if c in ('"', "'") and i + 2 < n and source[i:i + 3] in ('"""', "'''"):
                 quote = source[i:i + 3]
-                out.append('   ')
+                out.append(quote)  # keep opening triple delimiter (M-fix)
                 i += 3
                 end = source.find(quote, i)
                 if end == -1:
@@ -1155,14 +1155,17 @@ class ChainBreakerEngine:
                 else:
                     chunk = source[i:end]
                     out.append(''.join(' ' if ch != '\n' else '\n' for ch in chunk))
-                    out.append('   ')
+                    out.append(quote)  # keep closing triple delimiter (M-fix)
                     i = end + 3
                 continue
 
-            # Single-line string
+            # Single-line string. Keep the quote delimiters and blank only the
+            # interior, so sink patterns that key on the literal (SQLi:
+            # execute(f" / "..."%) still match while content-based false
+            # positives stay suppressed. (M-fix — mirrors core/sentinel.py)
             if c in ('"', "'"):
                 quote = c
-                out.append(' ')
+                out.append(quote)
                 i += 1
                 while i < n:
                     if source[i] == '\\' and i + 1 < n:
@@ -1170,7 +1173,7 @@ class ChainBreakerEngine:
                         i += 2
                         continue
                     if source[i] == quote:
-                        out.append(' ')
+                        out.append(quote)
                         i += 1
                         break
                     if source[i] == '\n':

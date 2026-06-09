@@ -269,7 +269,7 @@ COMPLEX_INDICATORS = {
     # Review & improve (any language)
     "review this", "what's wrong", "what is wrong", "improve this", "best practice",
     "what's missing", "security review", "code review",
-    "fix this", "debug this", "why is this", "why does this",
+    "debug this", "why is this", "why does this",
     # Language-specific complex topics
     "pointer", "reference", "ownership", "borrow", "lifetime",  # Rust/C++
     "goroutine", "channel", "defer", "interface",                # Go

@@ -782,7 +782,7 @@ class SentinelEngine:
             # Triple-quoted string (must check before single-quote)
             if c in ('"', "'") and i + 2 < n and source[i:i + 3] in ('"""', "'''"):
                 quote = source[i:i + 3]
-                out.append('   ')  # the opening triple
+                out.append(quote)  # keep the opening triple delimiter
                 i += 3
                 end = source.find(quote, i)
                 if end == -1:
@@ -793,14 +793,19 @@ class SentinelEngine:
                 else:
                     chunk = source[i:end]
                     out.append(''.join(' ' if ch != '\n' else '\n' for ch in chunk))
-                    out.append('   ')  # the closing triple
+                    out.append(quote)  # keep the closing triple delimiter
                     i = end + 3
                 continue
 
-            # Single-line string (handles escape sequences)
+            # Single-line string (handles escape sequences).
+            # NOTE: we keep the opening/closing quote delimiters and blank only
+            # the interior. Blanking the delimiters too would defeat sink
+            # patterns that key on the literal (e.g. SQLi: execute(f" / "..."%),
+            # while content-based false positives (e.g. "os.system(" inside a
+            # string) are still suppressed because the interior is blanked.
             if c in ('"', "'"):
                 quote = c
-                out.append(' ')
+                out.append(quote)
                 i += 1
                 while i < n:
                     if source[i] == '\\' and i + 1 < n:
@@ -808,7 +813,7 @@ class SentinelEngine:
                         i += 2
                         continue
                     if source[i] == quote:
-                        out.append(' ')
+                        out.append(quote)
                         i += 1
                         break
                     if source[i] == '\n':

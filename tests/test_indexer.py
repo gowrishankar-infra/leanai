@@ -95,10 +95,14 @@ class TestProjectIndexer:
         assert stats.indexed_files < stats.total_files + 5
 
     def test_chunks_created(self, indexer, tmp_project):
+        if indexer._collection is None:
+            pytest.skip("ChromaDB unavailable — chunk storage needs it")
         indexer.index_project(str(tmp_project))
         assert indexer.count() > 0
 
     def test_chunks_python_functions(self, indexer, tmp_project):
+        if indexer._collection is None:
+            pytest.skip("ChromaDB unavailable — chunk storage needs it")
         indexer.index_project(str(tmp_project))
         assert indexer.count() >= 4  # greet, add, Calculator + helpers
 
@@ -141,6 +145,8 @@ class TestProjectIndexer:
         assert isinstance(formatted, str)
 
     def test_count_increases_after_index(self, indexer, tmp_project):
+        if indexer._collection is None:
+            pytest.skip("ChromaDB unavailable — chunk storage needs it")
         before = indexer.count()
         indexer.index_project(str(tmp_project))
         after = indexer.count()
@@ -152,6 +158,8 @@ class TestProjectIndexer:
         assert "total_chunks" in stats
 
     def test_clear_removes_all(self, indexer, tmp_project):
+        if indexer._collection is None:
+            pytest.skip("ChromaDB unavailable — chunk storage needs it")
         indexer.index_project(str(tmp_project))
         assert indexer.count() > 0
         indexer.clear()
