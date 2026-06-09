@@ -294,7 +294,9 @@ class SentinelEngine:
     def scan(self, target: str = None, severity_floor: Severity = Severity.LOW,
              use_model: bool = False, verbose: bool = True,
              targets: "Optional[List[str]]" = None,
-             reason: bool = False) -> Tuple[List[Vulnerability], SentinelStats]:
+             reason: bool = False, skip_tests: bool = False,
+             reason_max: int = 0, reason_min_severity: "Optional[Severity]" = None
+             ) -> Tuple[List[Vulnerability], SentinelStats]:
         """
         Run a security scan.
 
@@ -346,6 +348,17 @@ class SentinelEngine:
             file_analyses = {rel_target: self.brain._file_analyses[rel_target]}
         else:
             file_analyses = self.brain._file_analyses
+
+        # skip_tests: drop test/fixture files — they're not production attack
+        # surface, and (per real-run data) the model wastes time + over-confirms
+        # on test fixtures. Mirrors ChainBreaker's include_tests=False default.
+        if skip_tests and file_analyses:
+            file_analyses = {r: a for r, a in file_analyses.items()
+                             if not self._is_test_file(r)}
+            if not file_analyses:
+                if verbose:
+                    print("[Sentinel] All targets were test files (skip_tests on)")
+                return findings, stats
 
         if verbose:
             print(f"[Sentinel] Analyzing {len(file_analyses)} files for vulnerabilities...")
@@ -401,8 +414,10 @@ class SentinelEngine:
         # explanation + contextual fix, and drops confident false positives.
         if reason and self.model_fn:
             if verbose:
-                print(f"[Sentinel] Reasoning over {len(findings)} findings with model...")
-            findings = self._reason_about_findings(findings, verbose=verbose)
+                print(f"[Sentinel] Reasoning over findings with model...")
+            findings = self._reason_about_findings(
+                findings, verbose=verbose,
+                max_findings=reason_max, min_severity=reason_min_severity)
 
         # Attach CWE ids (standard taxonomy) to every finding.
         for f in findings:
@@ -785,6 +800,17 @@ class SentinelEngine:
 
     # ─────────── Model-primary reasoning (M-reason) ───────────
 
+    @staticmethod
+    def _is_test_file(rel_path: str) -> bool:
+        """Heuristic: is this a test / fixture file (not production surface)?"""
+        p = str(rel_path).replace("\\", "/").lower()
+        parts = p.split("/")
+        if any(seg in ("tests", "test", "__tests__", "testing") for seg in parts[:-1]):
+            return True
+        base = parts[-1]
+        return (base.startswith("test_") or base.endswith("_test.py")
+                or base == "conftest.py")
+
     def _function_for_finding(self, finding):
         """Find the FunctionInfo + graph node id for a finding, if available."""
         analysis = self.brain._file_analyses.get(finding.filepath)
@@ -873,27 +899,58 @@ class SentinelEngine:
             out['fix'] = m.group(1).strip()[:600]
         return out
 
-    def _reason_about_findings(self, findings, verbose: bool = False):
+    def _reason_about_findings(self, findings, verbose: bool = False,
+                               max_findings: int = 0, min_severity=None):
         """Model-primary pass: for each candidate, the model judges
         exploitability WITH context, attaches reasoning + a contextual fix,
         adjusts confidence, and confident false positives are dropped. The
         AST/regex layer remains the fast pre-filter that surfaces candidates.
-        Never raises — on any error a finding is kept unchanged."""
+        Never raises — on any error a finding is kept unchanged.
+
+        Gating (real-run data showed ~2 min/call on a local 27B, so reasoning
+        over everything can take hours): only findings at/above `min_severity`
+        are reasoned about, and at most `max_findings` of them (highest
+        severity, then confidence, first). The rest pass through UNCHANGED —
+        they keep their regex verdict, they are not dropped."""
         if not self.model_fn:
             return findings
-        kept = []
-        for f in findings:
+
+        # Partition: which findings actually go to the (slow) model.
+        def _eligible(f):
+            if min_severity is not None and f.severity.value < min_severity.value:
+                return False
+            return True
+
+        eligible = [f for f in findings if _eligible(f)]
+        passthrough = [f for f in findings if not _eligible(f)]
+        # Most important first, so a cap keeps the findings that matter.
+        eligible.sort(key=lambda f: (-f.severity.value, -f.confidence))
+        if max_findings and max_findings > 0 and len(eligible) > max_findings:
+            passthrough.extend(eligible[max_findings:])
+            eligible = eligible[:max_findings]
+        if verbose:
+            print(f"[Sentinel] Reasoning over {len(eligible)} findings "
+                  f"({len(passthrough)} passed through ungated)")
+
+        kept = list(passthrough)
+        for f in eligible:
             try:
                 context = self._build_finding_context(f)
                 prompt = (
-                    "You are a security analyst. A static pre-filter flagged the "
-                    "function below as a possible "
-                    f"{f.vuln_class.replace('_', ' ')}. Using the code AND its "
-                    "context, decide whether it is ACTUALLY exploitable by "
-                    "untrusted input. Reply in EXACTLY this format:\n"
+                    "You are a careful, skeptical security analyst. A static "
+                    "pre-filter flagged the function below as a possible "
+                    f"{f.vuln_class.replace('_', ' ')}. The pre-filter is noisy "
+                    "and OVER-reports. Default to 'not_exploitable' UNLESS you "
+                    "can trace a concrete path from genuinely untrusted input "
+                    "(network/request/CLI/file/user) to the sink. Treat as "
+                    "NOT exploitable: hardcoded/constant values, test code and "
+                    "fixtures (tempfile, fixed paths in tests), internal-only "
+                    "calls, and values the application controls. Reply in "
+                    "EXACTLY this format:\n"
                     "VERDICT: exploitable | not_exploitable | uncertain\n"
                     "CONFIDENCE: <0.0-1.0>\n"
-                    "REASONING: <one or two sentences>\n"
+                    "REASONING: <one or two sentences; name the untrusted "
+                    "source if exploitable>\n"
                     "FIX: <concrete remediation>\n\n"
                     f"{context}\n"
                 )

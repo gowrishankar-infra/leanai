@@ -1469,6 +1469,8 @@ def main():
             target = None
             use_model = False
             reason = False
+            include_tests = False
+            reason_all = False
             severity_floor = Severity.LOW
 
             i = 1
@@ -1478,6 +1480,10 @@ def main():
                     use_model = True
                 elif tok == "--reason":
                     reason = True          # model-primary exploitability reasoning
+                elif tok == "--include-tests":
+                    include_tests = True   # also scan test/fixture files
+                elif tok == "--all":
+                    reason_all = True      # reason over ALL findings (slow), no gate
                 elif tok == "--severity" and i + 1 < len(tokens):
                     sev = tokens[i + 1].upper()
                     if sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
@@ -1521,6 +1527,14 @@ def main():
                         use_model=use_model,
                         reason=reason,
                         verbose=True,
+                        # Real-run data: test files are noise + the model
+                        # over-confirms them, and reasoning is ~2 min/call on a
+                        # local 27B. So skip tests, and only reason over the
+                        # most important findings (MEDIUM+, capped) unless the
+                        # user passed --all.
+                        skip_tests=(not include_tests),
+                        reason_max=(0 if reason_all else 12),
+                        reason_min_severity=(None if reason_all else Severity.MEDIUM),
                     )
                     print(format_findings_report(findings, stats, color=True))
 
@@ -1569,7 +1583,7 @@ def main():
             with watchguard_pause(watchguard):
                 try:
                     _sent = SentinelEngine(brain)
-                    _sent.scan(severity_floor=Severity.LOW, use_model=False, verbose=True)
+                    _sent.scan(severity_floor=Severity.LOW, use_model=False, verbose=True, skip_tests=True)
                     _cbe = ChainBreakerEngine(brain)
                     _cbe.analyze(severity_floor=Severity.MEDIUM, verbose=True)
                 except Exception as e:
