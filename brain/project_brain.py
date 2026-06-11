@@ -47,6 +47,10 @@ SKIP_DIRS = {
     "env", ".env", ".tox", ".mypy_cache", ".pytest_cache",
     "dist", "build", ".eggs", "*.egg-info", ".idea", ".vscode",
     "target", "bin", "obj",
+    # eval corpus holds INTENTIONALLY-vulnerable fixtures; never index them
+    # in a real project scan or they pollute findings. The eval runner points
+    # ProjectBrain straight at evals/corpus, so this exclusion doesn't affect it.
+    "evals",
 }
 
 

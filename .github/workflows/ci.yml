@@ -36,15 +36,15 @@ jobs:
       - name: Install test dependencies (lightweight subset)
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-rerunfailures psutil numpy pydantic watchdog fastapi uvicorn rank-bm25 sympy z3-solver huggingface-hub
+          pip install pytest psutil numpy pydantic watchdog fastapi uvicorn rank-bm25 sympy z3-solver huggingface-hub
 
       # The detection-quality gate runs FIRST and alone: if a detector or
       # source pattern regressed, fail loudly before anything else.
       - name: Detection eval (100% recall + 100% precision required)
         run: python evals/run_eval.py
 
-      # --reruns 1 absorbs the two known time/randomness flakes
-      # (test_federated DP noise, test_phase3 time-based ids). The real
-      # fix is seeding them; reruns are a stopgap so CI signal stays clean.
+      # The two historically-flaky tests (test_federated DP noise,
+      # test_phase3 time-based ids) are now seeded at the source, so the
+      # suite is deterministic and needs no rerun crutch.
       - name: Unit tests
-        run: python -m pytest tests/ -q --reruns 1 --reruns-delay 1
+        run: python -m pytest tests/ -q

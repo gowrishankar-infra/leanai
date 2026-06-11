@@ -137,6 +137,12 @@ class TestEnhancedSelfPlay:
             assert 0.0 <= p.difficulty <= 1.0
 
     def test_unique_ids(self):
+        # Seed the RNG so the generated batch is deterministic. IDs are an
+        # md5 of the problem TEXT, so two randomly-identical problems collide;
+        # without a seed this test was rarely flaky (handoff §6.5). Seeding
+        # removes the chance dependency without touching production id logic.
+        import random as _random
+        _random.seed(1337)
         pairs = self.engine.generate_batch(20)
         ids = [p.id for p in pairs]
         # IDs should be mostly unique (hash collisions possible but rare)

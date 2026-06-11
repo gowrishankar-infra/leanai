@@ -321,20 +321,29 @@ def analyze_python_file(filepath: str, source: Optional[str] = None) -> FileAnal
     # Module docstring
     result.docstring = ast.get_docstring(tree)
 
+    # Precompute each node's DIRECT parent in one pass. The method-detection
+    # below previously re-walked the whole tree (and each ClassDef subtree)
+    # for every function node — an O(n^3) blow-up that dominated brain.scan
+    # on large files (~10M ast.walk calls). A single parent map gives the
+    # exact same answer ("is this function a direct child of a class body?")
+    # in linear time.
+    _parent_of = {}
+    for _p in ast.walk(tree):
+        for _c in ast.iter_child_nodes(_p):
+            _parent_of[_c] = _p
+
     for node in ast.walk(tree):
         # ── Functions ──────────────────────────────────────────
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            # Determine if it's a method
+            # A method is a function whose DIRECT parent is a ClassDef and
+            # which appears in that class's body (preserves the original
+            # semantics: nested functions inside methods are NOT methods).
             is_method = False
             class_name = None
-            for parent in ast.walk(tree):
-                if isinstance(parent, ast.ClassDef):
-                    if node in ast.walk(parent) and node is not parent:
-                        for item in parent.body:
-                            if item is node:
-                                is_method = True
-                                class_name = parent.name
-                                break
+            parent = _parent_of.get(node)
+            if isinstance(parent, ast.ClassDef) and any(item is node for item in parent.body):
+                is_method = True
+                class_name = parent.name
 
             # Collect calls
             call_collector = _CallCollector()

@@ -16,6 +16,19 @@ from federated.aggregator import (
 from federated.node import FederatedNode, NodeConfig, FederatedRound
 
 
+@pytest.fixture(autouse=True)
+def _seed_rng():
+    # Differential-privacy noise (Laplace/Gaussian) is unbounded, so on rare
+    # draws an assertion like `norm(result) < 15.0` could fail even with
+    # correct code (handoff §6.5 flaky test). Seeding numpy + random before
+    # every test in this module makes the noise deterministic without changing
+    # any production behavior.
+    import random as _random
+    np.random.seed(20260611)
+    _random.seed(20260611)
+    yield
+
+
 # ══════════════════════════════════════════════════════════════════
 # Differential Privacy Tests
 # ══════════════════════════════════════════════════════════════════
