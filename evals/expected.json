@@ -1,0 +1,42 @@
+{
+  "description": "Ground truth for the Sentinel detection eval. 'vulnerable' files list the vuln classes Sentinel MUST find (with a minimum count) and MUST NOT report anything outside expected_classes. 'clean' files must produce ZERO findings. 'source_check' files must produce zero findings AND register at least min_sources input sources (proves SOURCE_PATTERNS fire end-to-end). Any change to detection rules that alters these expectations needs owner sign-off (standing rule 7).",
+  "files": {
+    "vuln_sql_injection.py": {
+      "kind": "vulnerable",
+      "expected": { "sql_injection": 2 }
+    },
+    "vuln_command_injection.py": {
+      "kind": "vulnerable",
+      "expected": { "command_injection": 2 }
+    },
+    "vuln_path_traversal.py": {
+      "kind": "vulnerable",
+      "expected": { "path_traversal": 2 }
+    },
+    "vuln_weak_crypto.py": {
+      "kind": "vulnerable",
+      "expected": { "weak_crypto": 2 }
+    },
+    "vuln_race_condition.py": {
+      "kind": "vulnerable",
+      "expected": { "race_condition": 1 }
+    },
+    "vuln_unsafe_deserialization.py": {
+      "kind": "vulnerable",
+      "expected": { "unsafe_deserialization": 1 }
+    },
+    "vuln_hardcoded_secret.py": {
+      "kind": "vulnerable",
+      "expected": { "hardcoded_secret": 1 }
+    },
+    "clean_sql_parameterized.py": { "kind": "clean" },
+    "clean_subprocess_list.py": { "kind": "clean" },
+    "clean_md5_non_security.py": { "kind": "clean" },
+    "clean_path_safe.py": { "kind": "clean" },
+    "clean_yaml_safe_load.py": { "kind": "clean" },
+    "clean_env_config.py": { "kind": "clean" },
+    "sources_django.py": { "kind": "source_check", "min_sources": 1 },
+    "sources_fastapi.py": { "kind": "source_check", "min_sources": 1 },
+    "sources_tornado.py": { "kind": "source_check", "min_sources": 1 }
+  }
+}

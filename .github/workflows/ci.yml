@@ -1,0 +1,50 @@
+# LeanAI CI — detection eval gate + unit tests on Linux AND Windows.
+#
+# Why both OSes: the M11 Watchguard test failure proved tests can pass on
+# Linux "for the wrong reason" (path-separator differences). This matrix
+# catches that class of bug automatically on every push.
+#
+# Deliberately NOT installed (heavy / compiled / model-dependent):
+#   llama-cpp-python, chromadb, sentence-transformers
+# The suite has skip-guards for these (same conditions as the sandbox run
+# that gave 939 passed / 42 skipped). Real-model behavior is still verified
+# on the owner's machine via tools/selfcheck.py --with-model.
+
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies (lightweight subset)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-rerunfailures psutil numpy pydantic watchdog fastapi uvicorn rank-bm25 sympy z3-solver huggingface-hub
+
+      # The detection-quality gate runs FIRST and alone: if a detector or
+      # source pattern regressed, fail loudly before anything else.
+      - name: Detection eval (100% recall + 100% precision required)
+        run: python evals/run_eval.py
+
+      # --reruns 1 absorbs the two known time/randomness flakes
+      # (test_federated DP noise, test_phase3 time-based ids). The real
+      # fix is seeding them; reruns are a stopgap so CI signal stays clean.
+      - name: Unit tests
+        run: python -m pytest tests/ -q --reruns 1 --reruns-delay 1
