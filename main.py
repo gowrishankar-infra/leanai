@@ -724,6 +724,8 @@ def main():
         print(f"  {C.fg(220)}  1. /brain .        → scans your project (AST + dependency graph){C.RESET}")
         print(f"  {C.fg(220)}  2. /model auto     → smart 4-model routing by query type{C.RESET}")
         print(f"  {C.fg(220)}  Then ask about YOUR code — that's where LeanAI beats cloud AI.{C.RESET}")
+        print(f"  {C.fg(220)}  Tip: type /model to see all models — and /model connect to use one{C.RESET}")
+        print(f"  {C.fg(220)}       on another machine (no GPU needed here).{C.RESET}")
         print(f"  {C.fg(220)}{'━' * 58}{C.RESET}")
         print()
 
@@ -2705,6 +2707,53 @@ def main():
                 success, msg = model_mgr.download(target)
                 print(msg)
 
+            elif subcmd.startswith("connect"):
+                # Guided wizard: auto-discovers a server's models and writes
+                # endpoints.yaml. Same flow the installer uses.
+                try:
+                    from core.endpoints import connect_interactive
+                    alias = connect_interactive()
+                    if alias:
+                        try:
+                            model_mgr._load_remote_endpoints()  # pick up the new alias
+                        except Exception:
+                            pass
+                        print(f"Switching to remote:{alias}...")
+                        try:
+                            ok = engine.switch_model(f"remote:{alias}")
+                            if ok:
+                                current_model_key = alias
+                                print(f"Loaded remote:{alias}.")
+                            else:
+                                print(f"  {C.RED}Could not load remote:{alias}.{C.RESET} "
+                                      f"It was saved to endpoints.yaml — check it with "
+                                      f"/model test {alias}.")
+                        except Exception as e:
+                            print(f"Error loading remote model: {e}")
+                except Exception as e:
+                    print(f"Connect error: {e}")
+
+            elif subcmd.startswith("test"):
+                # Ping configured remote endpoints (OpenAI-compatible / Ollama).
+                alias = subcmd.replace("test", "").strip()
+                try:
+                    from core.endpoints import load_endpoints, make_client
+                    specs = load_endpoints()
+                    if not specs:
+                        print("No remote endpoints configured. See REMOTE_MODELS.md / "
+                              "create ~/.leanai/endpoints.yaml (endpoints.example.yaml).")
+                    elif alias and alias not in specs:
+                        print(f"Unknown remote alias: {alias}. Configured: {list(specs.keys())}")
+                    else:
+                        targets = [alias] if alias else list(specs.keys())
+                        for a in targets:
+                            spec = specs[a]
+                            ok = make_client(spec).ping()
+                            state = f"{C.fg(120)}reachable{C.RESET}" if ok else f"{C.RED}UNREACHABLE{C.RESET}"
+                            print(f"  {a:20s} {spec.base_url:40s} {state}")
+                except Exception as e:
+                    print(f"Endpoint test error: {e}")
+
             elif subcmd in model_mgr.models:
                 # Switch to a specific model
                 model_key = subcmd
@@ -2737,6 +2786,9 @@ def main():
                 print("  /model qwen35-27b   Use Qwen3.5 (best quality)")
                 print("  /model qwen3-coder  Use Qwen3 Coder 30B MoE")
                 print("  /model download X   Download a model")
+                print("  /model <alias>      Use a remote endpoint (see endpoints.yaml)")
+                print("  /model connect      Connect a remote model (guided setup)")
+                print("  /model test [alias] Check remote endpoint reachability")
 
         # ══════════════════════════════════════════════════════════
         # STATUS

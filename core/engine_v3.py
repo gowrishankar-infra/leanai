@@ -58,11 +58,18 @@ class LeanAIResponse:
     corrected: bool = False
 
 
+def _is_remote(path) -> bool:
+    """A model identifier served over HTTP, e.g. 'remote:my-coder'."""
+    return isinstance(path, str) and path.startswith("remote:")
+
+
 def _get_active_model_path() -> str:
     """Find the active model. Checks config file first, then scans for any downloaded model."""
     config_file = Path(os.environ.get("LEANAI_HOME", str(Path.home() / ".leanai"))) / "active_model.txt"
     if config_file.exists():
         path = config_file.read_text().strip()
+        if _is_remote(path):
+            return path  # remote alias — no filesystem to check
         if Path(path).exists():
             return path
 
@@ -92,6 +99,8 @@ def _save_active_model(model_path: str):
 
 
 def _detect_prompt_format(model_path: str) -> str:
+    if _is_remote(model_path):
+        return "chatml"  # overridden from the endpoint spec at load time
     name = Path(model_path).name.lower()
     if "gemma" in name: return "gemma"
     if "qwen" in name: return "chatml"
@@ -101,6 +110,8 @@ def _detect_prompt_format(model_path: str) -> str:
 
 
 def _optimal_threads(model_path: str) -> int:
+    if _is_remote(model_path):
+        return min(os.cpu_count() or 8, 16)  # unused remotely; safe default
     name = Path(model_path).name.lower()
     cpu = os.cpu_count() or 8
     # All models benefit from max threads on modern CPUs
@@ -403,7 +414,7 @@ class LeanAIEngineV3:
         if auto_train:
             self.trainer.start()
 
-        model_name = Path(self.model_path).name
+        model_name = self.model_path if _is_remote(self.model_path) else Path(self.model_path).name
         print("[LeanAI v3] Engine initialized.")
         print(f"[LeanAI v3] Model: {model_name}")
         print(f"[LeanAI v3] Format: {self.prompt_format}")
@@ -568,7 +579,7 @@ class LeanAIEngineV3:
         # Reset state to the candidate
         self._model_loaded = False
         self.model_path = new_model_path
-        self.model_name = Path(new_model_path).name
+        self.model_name = new_model_path if _is_remote(new_model_path) else Path(new_model_path).name
         self.prompt_format = _detect_prompt_format(new_model_path)
         self.n_threads = _optimal_threads(new_model_path)
 
@@ -583,7 +594,7 @@ class LeanAIEngineV3:
         # Failure — restore previous settings (it'll lazy-reload the last
         # working model on the next request). Do NOT touch active_model.txt.
         self.model_path, self.prompt_format, self.n_threads = prev
-        self.model_name = Path(self.model_path).name
+        self.model_name = self.model_path if _is_remote(self.model_path) else Path(self.model_path).name
         self._model_loaded = False
         return False
 
@@ -591,6 +602,9 @@ class LeanAIEngineV3:
 
     def _load_model(self):
         if self._model_loaded:
+            return
+        if _is_remote(self.model_path):
+            self._load_remote_model()
             return
         if not Path(self.model_path).exists():
             print(f"[LeanAI v3] Model not found: {self.model_path}")
@@ -657,6 +671,35 @@ class LeanAIEngineV3:
         except Exception as e:
             print(f"[LeanAI v3] Error loading model: {e}")
             # DON'T set _model_loaded = True — allow retry
+
+    def _load_remote_model(self):
+        """Connect to an OpenAI-compatible / Ollama endpoint named by
+        'remote:<alias>'. On success self._model is a RemoteModel that quacks
+        like llama_cpp.Llama, so generation paths are unchanged. On failure we
+        leave self._model = None (NOT _model_loaded), so switch_model reports an
+        honest False and the engine falls back to the previous working model."""
+        alias = self.model_path.split("remote:", 1)[1]
+        try:
+            from core.endpoints import load_endpoints, make_client
+            spec = load_endpoints().get(alias)
+            if spec is None:
+                print(f"[LeanAI v3] Remote alias '{alias}' not found in endpoints.yaml.")
+                return
+            client = make_client(spec)
+            print(f"[LeanAI v3] Connecting to '{spec.endpoint_name}' "
+                  f"({spec.base_url}) model={spec.model_id} mode={spec.mode}...")
+            if not client.ping():
+                print(f"[LeanAI v3] Remote endpoint unreachable or auth rejected: "
+                      f"{spec.base_url}")
+                return
+            self._model = client
+            self.prompt_format = spec.prompt_format or "chatml"
+            self._ctx_size = spec.context or 8192
+            self._model_loaded = True
+            print(f"[LeanAI v3] Remote model ready: {spec.model_id}")
+        except Exception as e:
+            print(f"[LeanAI v3] Error connecting to remote endpoint: {e}")
+            # leave self._model = None — allow retry
 
     def _generate_with_model(self, prompt, config):
         self._load_model()
@@ -1042,7 +1085,8 @@ class LeanAIEngineV3:
 
     def status(self):
         return {
-            "phase": "3+4b", "model": Path(self.model_path).name,
+            "phase": "3+4b",
+            "model": self.model_path if _is_remote(self.model_path) else Path(self.model_path).name,
             "prompt_format": self.prompt_format, "threads": self.n_threads,
             "model_loaded": self._model is not None,
             "executor": {"available": self.executor.available_languages,

@@ -100,10 +100,15 @@ def check_disk():
         return 0
 
 
-def install_dependencies():
-    """Install Python dependencies — auto-creates venv if needed."""
+def install_dependencies(local_models=True):
+    """Install Python dependencies — auto-creates venv if needed.
+
+    local_models=False installs the lighter remote-only set (no
+    llama-cpp-python), for machines that only talk to a remote endpoint.
+    """
     print("\n  Installing dependencies...")
-    req_file = Path(__file__).parent / "requirements.txt"
+    req_name = "requirements.txt" if local_models else "requirements-remote.txt"
+    req_file = Path(__file__).parent / req_name
     project_dir = Path(__file__).parent
     venv_dir = project_dir / ".venv"
 
@@ -142,9 +147,9 @@ def install_dependencies():
                         print("  Dependencies installed ✓")
                     else:
                         print(f"  Some packages failed. Trying individually...")
-                        _install_individual(venv_pip)
+                        _install_individual(venv_pip, local_models)
                 else:
-                    _install_individual(venv_pip)
+                    _install_individual(venv_pip, local_models)
 
                 print(f"\n  ⚠ IMPORTANT: Activate the venv before running LeanAI:")
                 if platform.system() == "Windows":
@@ -174,18 +179,17 @@ def install_dependencies():
         else:
             print(f"  Some packages failed. Trying individually...")
 
-    _install_individual(sys.executable + " -m pip")
+    _install_individual(sys.executable + " -m pip", local_models)
     return True
 
 
-def _install_individual(pip_cmd):
+def _install_individual(pip_cmd, local_models=True):
     """Install packages one by one. Used when bulk install fails."""
     packages = [
-        "llama-cpp-python",
         "chromadb",
         "sentence-transformers",
         "rank-bm25",           # M6 InfiniteContext — hybrid retrieval
-        "huggingface-hub",
+        "pyyaml",              # remote endpoints config
         "fastapi",
         "uvicorn",
         "numpy",
@@ -193,6 +197,9 @@ def _install_individual(pip_cmd):
         "psutil",
         "pytest",
     ]
+    if local_models:
+        # llama-cpp-python + huggingface-hub are only needed for LOCAL models.
+        packages = ["llama-cpp-python", "huggingface-hub"] + packages
 
     for pkg in packages:
         try:
@@ -274,6 +281,37 @@ def _set_active_model(model_path: str):
         print(f"  Warning: could not save active model config: {e}")
 
 
+def ask_yes_no(question: str, default: bool = True) -> bool:
+    """Prompt y/n. Non-interactive (no stdin) falls back to `default`."""
+    suffix = " (Y/n): " if default else " (y/N): "
+    try:
+        ans = input(question + suffix).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return default
+    if not ans:
+        return default
+    return ans in ("y", "yes")
+
+
+def _leanai_home() -> Path:
+    return Path(os.environ.get("LEANAI_HOME", str(Path.home() / ".leanai")))
+
+
+def setup_remote_endpoint() -> bool:
+    """Guided remote-model connect: auto-discovers the server's models so the
+    user only types an address and picks one. Delegates to the shared wizard in
+    core.endpoints so the same flow is available in-app via '/model connect'.
+    """
+    try:
+        from core.endpoints import connect_interactive
+    except Exception as e:
+        print(f"  Could not load remote setup ({e}).")
+        print("  You can configure it later — see endpoints.example.yaml / REMOTE_MODELS.md.")
+        return False
+    alias = connect_interactive(home=_leanai_home())
+    return alias is not None
+
+
 def main():
     print_header()
 
@@ -297,18 +335,32 @@ def main():
 
     print(f"\n  Platform: {platform.system()} {platform.machine()}")
 
+    # Local models vs remote endpoint
+    print("\n  Model location")
+    print("  " + "-" * 40)
+    print("  LeanAI can run a model locally (needs RAM/CPU/GPU + a few GB on disk)")
+    print("  OR talk to one served elsewhere (Ollama / OpenAI-compatible API).")
+    if not has_gpu:
+        print("  No GPU was detected — a remote endpoint is a good fit for this machine.")
+    local_models = ask_yes_no("  Run models LOCALLY on this machine?", default=has_gpu)
+
     # Install dependencies
     print("\n  Dependencies")
     print("  " + "-" * 40)
-    install_dependencies()
+    install_dependencies(local_models=local_models)
 
-    # Download model
+    # Model — local download OR remote endpoint config
     print("\n  Model")
     print("  " + "-" * 40)
-    download_model()
+    remote_ready = False
+    if local_models:
+        download_model()
+    else:
+        print("  Skipping local model download (using a remote endpoint).")
+        remote_ready = setup_remote_endpoint()
 
     # GPU acceleration hint
-    if has_gpu:
+    if has_gpu and local_models:
         print("\n  GPU Acceleration (optional)")
         print("  " + "-" * 40)
         print("  Your GPU was detected! For 3.5x faster responses:")
@@ -338,9 +390,15 @@ def main():
     print("    /exploit --all    # benign proof-of-concept demos (M3)")
     print("    /forensics <fn>   # deterministic git+AST archaeology (M4)")
     print()
-    print("  Upgrade models (recommended, ~17 GB each):")
-    print("    python download_models.py gemma4-26b    # best for frontend/UI")
-    print("    python download_models.py qwen35-27b    # best for backend/reasoning")
+    if local_models:
+        print("  Upgrade models (recommended, ~17 GB each):")
+        print("    python download_models.py gemma4-26b    # best for frontend/UI")
+        print("    python download_models.py qwen35-27b    # best for backend/reasoning")
+    else:
+        print("  Using a remote endpoint:")
+        print(f"    /model              # your remote alias is listed here")
+        print(f"    /model test         # check the endpoint is reachable")
+        print(f"    Edit ~/.leanai/endpoints.yaml to add more remote models.")
     print()
     print("  Full command reference: COMMANDS.md")
     print("  Project README:         README.md")

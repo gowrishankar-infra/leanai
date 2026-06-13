@@ -1,0 +1,53 @@
+# LeanAI — Remote model endpoints
+# Copy to:  ~/.leanai/endpoints.yaml   (Windows: C:\Users\<you>\.leanai\endpoints.yaml)
+# Then switch to a remote model in LeanAI with:  /model <alias>
+# Test reachability with:  /model test
+#
+# Every model under an endpoint becomes a switchable alias that behaves just
+# like a local model. Aliases must be lowercase and must not clash with the
+# built-in keys (qwen-7b, gemma4-26b, qwen35-27b, etc).
+
+endpoints:
+  # ── Your hosted Ollama box (no GPU needed on this laptop) ──────────
+  - name: home-ollama
+    base_url: http://192.168.1.50:11434/v1   # Ollama's OpenAI-compatible API
+    mode: completions          # completions = best for Ollama/llama.cpp (keeps
+                               # LeanAI's own prompt formatting). Use 'chat' only
+                               # for servers that lack /v1/completions (OpenAI).
+    api_key: ollama            # Ollama ignores this; any non-empty value is fine.
+                               # You can also omit api_key entirely for Ollama.
+    timeout: 180               # seconds; raise for big models on slow hardware
+    models:
+      - id: qwen2.5-coder:7b   # the model tag as Ollama knows it
+        alias: remote-coder    # what you type:  /model remote-coder
+        prompt_format: chatml  # chatml | gemma | llama3 | phi3
+        quality: 72            # used by /model quality + auto routing (0-100)
+        speed: fast
+        description: "Hosted Ollama — Qwen2.5 Coder 7B"
+      - id: llama3.1:8b
+        alias: remote-llama
+        prompt_format: llama3
+        quality: 74
+
+  # ── OpenAI proper (only supports chat completions) ────────────────
+  # Sending source code to OpenAI means it leaves your machine — unlike your
+  # own Ollama box. Keep that in mind for private code.
+  - name: openai
+    base_url: https://api.openai.com/v1
+    mode: chat                 # OpenAI's modern models only expose chat
+    api_key_env: OPENAI_API_KEY   # read the key from this environment variable
+    models:
+      - id: gpt-4o-mini
+        alias: gpt4o-mini
+        quality: 88
+        speed: fast
+        description: "OpenAI GPT-4o mini"
+
+  # ── Any other OpenAI-compatible server (vLLM, LM Studio, LocalAI,
+  #     llama.cpp server, OpenRouter, Together, Groq, ...) ────────────
+  # - name: lmstudio
+  #   base_url: http://localhost:1234/v1
+  #   mode: completions
+  #   models:
+  #     - id: your-model-name
+  #       alias: lmstudio-model

@@ -1,0 +1,43 @@
+# LeanAI — Requirements (REMOTE-ONLY install)
+# Use this when the model runs on another machine (Ollama / OpenAI-compatible
+# endpoint) and you do NOT want a local GGUF on this box. The big difference
+# vs requirements.txt: NO llama-cpp-python (no GPU/compiler pain) and no model
+# download. Everything else — memory, retrieval, Sentinel, the server — still
+# works and runs fine on CPU.
+#
+# Install: pip install -r requirements-remote.txt
+# Then configure ~/.leanai/endpoints.yaml (see endpoints.example.yaml).
+
+# Remote endpoint config parsing
+pyyaml>=6.0
+
+# Vector memory (M6 InfiniteContext + memory store)
+chromadb>=0.4.0
+
+# Embeddings for semantic search (M6) and conversation memory
+sentence-transformers>=2.2.0
+
+# Hybrid retrieval — BM25 keyword scoring (M6 InfiniteContext)
+rank-bm25>=0.2.2
+
+# File watcher (M9 Watchguard)
+watchdog>=3.0
+
+# Web server
+fastapi>=0.100.0
+uvicorn>=0.23.0
+
+# Data/ML utilities
+numpy>=1.24.0
+pydantic>=2.0.0
+
+# Symbolic verification (optional — Z3 math/algebra proofs)
+z3-solver>=4.12.0
+sympy>=1.12
+
+# Testing
+pytest>=7.0.0
+psutil>=5.9.0
+
+# NOTE: remote generation uses only the Python standard library (urllib).
+# No 'requests' or 'openai' SDK dependency is added.

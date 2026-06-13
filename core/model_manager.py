@@ -67,13 +67,19 @@ class ModelInfo:
     prompt_format: str         # "chatml", "phi3", etc.
     description: str = ""
     is_local: bool = False     # auto-discovered local .gguf (not curated registry)
+    is_remote: bool = False    # served over HTTP (OpenAI-compatible / Ollama)
+    model_uri: str = ""        # for remote: "remote:<alias>" identifier
 
     @property
     def full_path(self) -> str:
+        if self.is_remote:
+            return self.model_uri
         return str(get_models_dir() / self.filename)
 
     @property
     def is_downloaded(self) -> bool:
+        if self.is_remote:
+            return True  # remote endpoints are always "available" (no download)
         if os.path.exists(self.full_path):
             return True
         # Check for alternate filenames (user might have different quantization)
@@ -120,6 +126,8 @@ class ModelInfo:
     @property
     def resolved_path(self) -> str:
         """Find the actual file path, handling alternate filenames."""
+        if self.is_remote:
+            return self.model_uri
         if os.path.exists(self.full_path):
             return self.full_path
         models_dir = get_models_dir()
@@ -404,6 +412,42 @@ class ModelManager:
         # Surface any .gguf the user dropped in that no registry entry covers,
         # so EVERY local model is listable + switchable, not just curated ones.
         self._discover_local_models()
+        # Surface remote endpoints (OpenAI-compatible / Ollama) from
+        # ~/.leanai/endpoints.yaml so they're listable + switchable too.
+        self._remote_specs = {}
+        self._load_remote_endpoints()
+
+    def _load_remote_endpoints(self) -> None:
+        """Add any remote model aliases from endpoints.yaml as switchable
+        entries. They report as 'available' (no download) and carry a
+        'remote:<alias>' URI the engine knows how to load. Never fatal."""
+        try:
+            from core.endpoints import load_endpoints
+            specs = load_endpoints()
+        except Exception as e:
+            print(f"[LeanAI] Could not load remote endpoints: {e}")
+            return
+        self._remote_specs = specs
+        for alias, spec in specs.items():
+            if alias in self.models:
+                # Don't let a remote alias shadow a curated/local key.
+                print(f"[LeanAI] Remote alias '{alias}' clashes with an existing "
+                      f"model key — skipped.")
+                continue
+            self.models[alias] = ModelInfo(
+                name=f"{spec.model_id} (remote · {spec.endpoint_name})",
+                filename="",
+                repo_id="(remote endpoint)",
+                size_gb=0.0,
+                ram_needed_gb=0.0,
+                quality_score=spec.quality_score,
+                speed_label=spec.speed_label,
+                prompt_format=spec.prompt_format,
+                description=spec.description,
+                is_local=False,
+                is_remote=True,
+                model_uri=f"remote:{alias}",
+            )
 
     def _discover_local_models(self) -> None:
         """Scan the models folder; add any unregistered .gguf as a switchable
@@ -465,7 +509,11 @@ class ModelManager:
         """List all available models with download status."""
         lines = ["Available Models:", ""]
         local = []
+        remote = []
         for key, model in self.models.items():
+            if getattr(model, "is_remote", False):
+                remote.append((key, model))
+                continue
             if getattr(model, "is_local", False):
                 local.append((key, model))
                 continue
@@ -474,6 +522,17 @@ class ModelManager:
                 f"  {key:12s}  {model.name:30s}  {model.speed_label:6s}  "
                 f"quality:{model.quality_score}%  {status}"
             )
+        if remote:
+            lines.append("")
+            lines.append("Remote endpoints (OpenAI-compatible / Ollama — no GPU needed):")
+            for key, model in remote:
+                lines.append(f"  {key:20s}  {model.name}  ({model.prompt_format})")
+            lines.append("  (test reachability with: /model test)")
+        else:
+            lines.append("")
+            lines.append("Remote endpoints: none yet.")
+            lines.append("  Run /model connect to add an Ollama or OpenAI-compatible "
+                         "server (no GPU needed here).")
         if local:
             lines.append("")
             lines.append("Local files (auto-detected in your models folder):")
@@ -481,7 +540,7 @@ class ModelManager:
                 lines.append(f"  {key:28s}  {model.name}  ({model.prompt_format})")
         lines.append(f"\nCurrent mode: {self._mode}")
         downloaded = [k for k, m in self.models.items() if m.is_downloaded]
-        lines.append(f"Downloaded: {', '.join(downloaded) or 'none'}")
+        lines.append(f"Available: {', '.join(downloaded) or 'none'}")
         return "\n".join(lines)
 
     def get_downloaded_models(self) -> List[str]:
@@ -651,18 +710,25 @@ class ModelManager:
                 return self._pick_fastest(downloaded)
 
     def _pick_fastest(self, downloaded: List[str]) -> str:
-        """Pick the fastest (smallest) downloaded model. Prefer curated
-        registry models; auto-discovered local files are selectable by name
-        but should NOT silently become the auto-routing default."""
-        curated = [k for k in downloaded if not getattr(self.models[k], "is_local", False)]
-        pool = curated or downloaded
+        """Pick the fastest (smallest) available model. Preference order:
+        curated local registry → remote endpoints → auto-detected local files.
+        This keeps a dropped-in .gguf from hijacking auto-routing, while still
+        letting a no-GPU machine (only remote endpoints) route automatically."""
+        curated = [k for k in downloaded
+                   if not getattr(self.models[k], "is_local", False)
+                   and not getattr(self.models[k], "is_remote", False)]
+        remote = [k for k in downloaded if getattr(self.models[k], "is_remote", False)]
+        pool = curated or remote or downloaded
         by_speed = sorted(pool, key=lambda k: self.models[k].size_gb)
         return by_speed[0]
 
     def _pick_best_quality(self, downloaded: List[str]) -> str:
-        """Pick the highest quality downloaded model (curated first)."""
-        curated = [k for k in downloaded if not getattr(self.models[k], "is_local", False)]
-        pool = curated or downloaded
+        """Pick the highest quality available model (curated → remote → local)."""
+        curated = [k for k in downloaded
+                   if not getattr(self.models[k], "is_local", False)
+                   and not getattr(self.models[k], "is_remote", False)]
+        remote = [k for k in downloaded if getattr(self.models[k], "is_remote", False)]
+        pool = curated or remote or downloaded
         by_quality = sorted(pool, key=lambda k: self.models[k].quality_score, reverse=True)
         return by_quality[0]
 
