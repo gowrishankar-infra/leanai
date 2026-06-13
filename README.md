@@ -111,6 +111,40 @@ python run_server.py
 # See vscode-extension/README.md
 ```
 
+### Run from anywhere — the `leanai` command (optional)
+
+Install a `leanai` command so you can start it from any folder:
+
+```bash
+python install_launcher.py
+```
+
+This records the repo's location once and writes a small launcher onto your PATH
+(Windows: `%USERPROFILE%\bin\leanai.bat`; macOS/Linux: `~/.local/bin/leanai`).
+After that, just type `leanai` anywhere. It does **not** scan your disk — the
+path is captured at install, so it's instant; re-run it if you ever move the
+repo. Run it with the same `python` you use for LeanAI so the command inherits
+the right environment.
+
+### Remote models — use a model on another machine (no GPU needed here)
+
+No GPU on this machine? Point LeanAI at a model served over HTTP — **Ollama**,
+llama.cpp server, vLLM, LM Studio, or **OpenAI**. A remote model behaves exactly
+like a local one: you switch to it, it streams, and the tooling still runs.
+
+```
+/model connect        # guided setup: type an address, pick a model it finds
+/model test           # check which configured endpoints are reachable
+/model <alias>        # switch to a remote model
+```
+
+`/model connect` queries the server, lists the models it discovers, guesses the
+prompt format, and writes the config for you — no YAML editing or model tags to
+memorize. The installer (`setup_leanai.py`) also offers this when you answer
+"no" to running models locally. Sending code to a hosted API (e.g. OpenAI) means
+it leaves your machine, so LeanAI flags external endpoints and keeps them
+opt-in; your own Ollama box stays private. Full guide: **REMOTE_MODELS.md**.
+
 ### ⚡ First Thing to Do (important — don't skip this)
 
 Without these steps, LeanAI is just a generic chatbot. WITH these steps, it knows your entire codebase:

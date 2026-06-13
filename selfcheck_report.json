@@ -1,0 +1,248 @@
+{
+  "generated": "2026-06-09 09:03:15",
+  "env": {
+    "python": "3.13.12",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "deps": {
+      "chromadb": true,
+      "sentence_transformers": true,
+      "watchdog": true,
+      "llama_cpp": true,
+      "numpy": true,
+      "pyflakes": false
+    },
+    "with_model": true
+  },
+  "source_project": "D:\\Downloads\\LeanAi\\leanai-phase1\\leanai",
+  "summary": {
+    "stages": 13,
+    "ok": 13,
+    "errors": 0
+  },
+  "stages": [
+    {
+      "stage": "brain_scan",
+      "ok": true,
+      "ms": 8763,
+      "metrics": {
+        "files_indexed": 133,
+        "graph_nodes": 3194,
+        "import_graph_files": 133
+      },
+      "error": null,
+      "sample": [
+        "agents\\__init__.py",
+        "agents\\build_command.py",
+        "agents\\pipeline.py",
+        "agents\\planner.py",
+        "api\\__init__.py",
+        "api\\complete_endpoint.py",
+        "api\\server.py",
+        "brain\\__init__.py"
+      ]
+    },
+    {
+      "stage": "sentinel_scan",
+      "ok": true,
+      "ms": 3346,
+      "metrics": {
+        "findings": 52,
+        "by_severity": {
+          "CRITICAL": 4,
+          "HIGH": 6,
+          "MEDIUM": 17,
+          "LOW": 25
+        },
+        "by_class": {
+          "sql_injection": 4,
+          "path_traversal": 6,
+          "weak_crypto": 29,
+          "race_condition": 3,
+          "command_injection": 10
+        },
+        "cwes": [
+          "CWE-22",
+          "CWE-327",
+          "CWE-362",
+          "CWE-78",
+          "CWE-89"
+        ],
+        "sources": 158,
+        "sinks": 47,
+        "taint_paths": 0
+      },
+      "error": null,
+      "sample": [
+        "CRITICAL sql_injection core\\memory_forge.py:1692",
+        "CRITICAL sql_injection core\\memory_forge.py:1706",
+        "CRITICAL sql_injection core\\memory_forge.py:1715",
+        "CRITICAL sql_injection core\\memory_forge.py:1866",
+        "HIGH path_traversal tests\\test_m11_features.py:65",
+        "HIGH path_traversal tests\\test_m11_features.py:99",
+        "HIGH path_traversal tests\\test_m12_audit.py:22",
+        "HIGH path_traversal tests\\test_m12_audit.py:39"
+      ]
+    },
+    {
+      "stage": "memory_sync",
+      "ok": true,
+      "ms": 623,
+      "metrics": {
+        "symbols": 3194,
+        "findings": 52,
+        "relations": 5301,
+        "events": 186
+      },
+      "error": null,
+      "sample": null
+    },
+    {
+      "stage": "incremental_crossfile",
+      "ok": true,
+      "ms": 2,
+      "metrics": {
+        "target": "agents\\__init__.py",
+        "scope_size": 1,
+        "neighbours": 0
+      },
+      "error": null,
+      "sample": [
+        "agents\\__init__.py"
+      ]
+    },
+    {
+      "stage": "chainbreaker",
+      "ok": true,
+      "ms": 115,
+      "metrics": {
+        "chains": 0,
+        "findings_loaded": 27,
+        "entries_resolved": 25,
+        "stale_skipped": 2
+      },
+      "error": null,
+      "sample": []
+    },
+    {
+      "stage": "findings_report",
+      "ok": true,
+      "ms": 14,
+      "metrics": {
+        "total": 52,
+        "by_severity": {
+          "CRITICAL": 4,
+          "HIGH": 6,
+          "MEDIUM": 17,
+          "LOW": 25
+        },
+        "sarif_valid": true,
+        "wrote": "sentinel-report-20260609-071301.sarif"
+      },
+      "error": null,
+      "sample": null
+    },
+    {
+      "stage": "security_audit",
+      "ok": true,
+      "ms": 10,
+      "metrics": {
+        "vuln_total": 52,
+        "chain_total": 0,
+        "wrote": [
+          "audit-20260609-071301.md",
+          "audit-20260609-071301.sarif"
+        ]
+      },
+      "error": null,
+      "sample": null
+    },
+    {
+      "stage": "config",
+      "ok": true,
+      "ms": 3,
+      "metrics": {
+        "set_ok": true,
+        "reload": 12345,
+        "all": {
+          "snippet_limit": 12345,
+          "incremental_cross_file": false
+        }
+      },
+      "error": null,
+      "sample": null
+    },
+    {
+      "stage": "module_code_context",
+      "ok": true,
+      "ms": 1,
+      "metrics": {
+        "built_context_for": "download_models.py::main",
+        "context_chars": 1489,
+        "rerank_top": "login token auth"
+      },
+      "error": null,
+      "sample": null
+    },
+    {
+      "stage": "module_verify_fix",
+      "ok": true,
+      "ms": 1,
+      "metrics": {
+        "good_ok": true,
+        "bad_ok": false,
+        "loop_fixed": true
+      },
+      "error": null,
+      "sample": null
+    },
+    {
+      "stage": "module_abstention",
+      "ok": true,
+      "ms": 1,
+      "metrics": {
+        "consensus": "exploitable",
+        "agreement": 0.67,
+        "low_conf_abstains": true
+      },
+      "error": null,
+      "sample": null
+    },
+    {
+      "stage": "watchguard",
+      "ok": true,
+      "ms": 315,
+      "metrics": {
+        "constructs": true,
+        "incremental_default": false,
+        "started_then_stopped": true
+      },
+      "error": null,
+      "sample": null
+    },
+    {
+      "stage": "sentinel_reason_with_model",
+      "ok": true,
+      "ms": 6614264,
+      "metrics": {
+        "smoke_reply": "OK",
+        "model_path": "C:\\Users\\adity\\.leanai\\models\\Qwen3.5-27B-Q4_K_M.gguf",
+        "model_calls": 53,
+        "empty_replies": 0,
+        "findings_after_reason": 16,
+        "verdicts": {
+          "exploitable": 15,
+          "uncertain": 1
+        }
+      },
+      "error": null,
+      "sample": [
+        "sql_injection verdict=exploitable :: The function constructs SQL query strings using Python f-strings with `symbol_qu",
+        "sql_injection verdict=exploitable :: The function constructs SQL query strings using Python f-strings with `symbol_qu",
+        "sql_injection verdict=exploitable :: The function constructs SQL query strings using Python f-strings with `symbol_qu",
+        "path_traversal verdict=exploitable :: The code concatenates `f.vuln_id` directly into the filename without sanitizatio",
+        "path_traversal verdict=exploitable :: The function concatenates `vuln_id` directly into the file path without sanitiza",
+        "path_traversal verdict=exploitable :: The function concatenates `vid` (vulnerability ID) directly into a file path wit"
+      ]
+    }
+  ]
+}
